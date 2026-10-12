@@ -417,17 +417,24 @@ func (a *Account) startWSRecorder(ctx context.Context) {
 	a.recorder.start(ctx)
 }
 
-// handleWSConnectFailure 封装handleWSConnectFailure业务协调。
+// handleWSConnectFailure 处理 WebSocket 握手的凭证类错误与可重试的传输类错误。
+// 只有平台明确拒绝凭证时才置 auth_expired 并终止账号主循环；
+// 拨号失败、DNS 解析失败、连接超时等瞬时错误只置可重试状态并返回 nil，
+// 让调用点的 continue 真正生效，避免一次网络抖动导致账号永久停摆。
 func (a *Account) handleWSConnectFailure(ctx context.Context, err error) error {
 	a.clearConnectionToken(ctx)
-	// reason 用于本次流程后续判断的原因
+	// authRejected 标记平台是否明确拒绝了本次凭证，只有这类错误才需要用户重新登录。
+	authRejected := ws.IsConnectLimitError(err) || ws.IsInvalidTokenError(err) || ws.IsAuthenticationError(err)
+	if !authRejected {
+		// 传输层瞬时错误：保留重试机会，网络恢复后账号应能自行回到在线状态。
+		a.setRuntimeState(RuntimeReconnecting, "消息服务连接失败，正在重试")
+		a.logger.Warn("WS 握手失败，将按退避重试", "err", err)
+		return nil
+	}
+	// reason 是最终展示给用户的凭证失效原因。
 	reason := "消息凭证被拒绝，请重新登录"
 	if ws.IsConnectLimitError(err) {
 		reason = "消息会话已被服务端移除"
-	} else if !ws.IsInvalidTokenError(err) && !ws.IsAuthenticationError(err) {
-		// 原生握手 CONNECT_FAILED 和 INVALID_TOKEN 一样进入官网 CONN_ERROR=5；
-		// /im 页面不会对该状态自动 reConnect，而是展示重新登录入口。
-		reason = "消息服务连接失败，请重新登录"
 	}
 	a.setRuntimeState(RuntimeAuthExpired, reason)
 	a.notifyOffline(ctx, reason)
