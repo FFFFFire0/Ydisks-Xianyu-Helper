@@ -1,0 +1,89 @@
+name: 构建自有镜像
+
+# 推到 main 分支（或在 Actions 页面手动触发）就自动构建镜像并发布到你的 GHCR。
+# 由于 Dockerfile.debian13 内部自带「无缓存时下载 Chromium」的兜底路径，
+# 这里不需要上游 CI 那套 Playwright 运行时预热步骤，流水线更短、更不容易失败。
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建并推送 (linux/amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成小写镜像名
+        id: image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=fork-latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.debian13
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=fork-${{ github.sha }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=ydisks-fork-amd64
+          cache-to: type=gha,mode=max,scope=ydisks-fork-amd64
+          provenance: mode=max
+          sbom: true
+
+      - name: 输出镜像地址
+        shell: bash
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -Eeuo pipefail
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "拉到 NAS 上使用的镜像标签："
+            echo ""
+            printf '%s\n' "$IMAGE_TAGS" | sed '/./{s/^/- `/;s/$/`/;}'
+            echo ""
+            echo "镜像默认是 private，首次在 NAS 上拉取需要在 GHCR 里把它设为 public，"
+            echo "或者先用 read:packages 权限的 token 执行 docker login ghcr.io。"
+          } >> "$GITHUB_STEP_SUMMARY"
