@@ -80,7 +80,7 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 		return task, true, "", nil
 	}
 		if c == nil || c.store == nil || c.store.Orders == nil {
-		return task, false, "order_store_unavailable", nil
+			return task, false, "order_store_unavailable", nil
 	}
 		if strings.TrimSpace(task.OrderID) == "" {
 		// 简化系统事件只带部分标识：同一会话或同一商品的交易已结算时，重复报文应视为已解决而不是无限延期。
