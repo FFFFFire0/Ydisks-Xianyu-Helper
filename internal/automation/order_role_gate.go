@@ -22,6 +22,10 @@ const roleVerificationRetryInterval = time.Minute
 // errSellerRoleEvidencePending 表示待核验任务暂时没有足够的本地卖家事实；调度器会按既有延期队列退避并最终通知人工。
 var errSellerRoleEvidencePending = errors.New("未知角色事件暂缺本地卖家事实")
 
+// unknownRoleEvidenceMaxAge 限制未知角色延期任务等待本地事实的最长时间。
+// 超过该时长仍无任何订单、商品或会话事实的报文，基本可判定为平台重复简化事件；静默关闭避免持续人工告警。
+const unknownRoleEvidenceMaxAge = 48 * time.Hour
+
 // isWebSocketShippingTask 判断任务是否来自 WebSocket 的付款后发货阶段；只有这类事件需要未知角色证据门禁。
 func isWebSocketShippingTask(task Task) bool {
 	// source、triggerType 保存经过规范化的事件来源和交易阶段，避免普通评价或人工任务误用卖家门禁。
@@ -50,6 +54,14 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 		return task, false, "explicit_buyer_role", nil
 	}
 	if task.TriggerType == TriggerOrderCreated {
+		// 简化拍下报文常缺商品号：同一会话或同一商品的交易已由完整事件结算时，重复报文应视为已解决。
+		resolved, resolvedReason, evalErr := c.settledTradeEvidence(ctx, task)
+		if evalErr != nil {
+			return task, false, "", evalErr
+		}
+		if resolved {
+			return task, false, resolvedReason, nil
+		}
 		if strings.TrimSpace(task.ItemID) == "" {
 			return task, false, "missing_local_item", nil
 		}
@@ -67,12 +79,21 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 		task.OrderRole = OrderRoleSeller
 		return task, true, "", nil
 	}
-	if c == nil || c.store == nil || c.store.Orders == nil {
+		if c == nil || c.store == nil || c.store.Orders == nil {
 		return task, false, "order_store_unavailable", nil
 	}
-	if strings.TrimSpace(task.OrderID) == "" {
+		if strings.TrimSpace(task.OrderID) == "" {
+		// 简化系统事件只带部分标识：同一会话或同一商品的交易已结算时，重复报文应视为已解决而不是无限延期。
+		resolved, resolvedReason, evalErr := c.settledTradeEvidence(ctx, task)
+		if evalErr != nil {
+			return task, false, "", evalErr
+		}
+		if resolved {
+			return task, false, resolvedReason, nil
+		}
 		return task, false, "missing_order_id", nil
 	}
+
 	// order、orderErr 保存当前账号的本地订单事实；读取范围随后还会再次核对账号归属。
 	order, orderErr := c.store.Orders.Get(ctx, task.OrderID)
 	if errors.Is(orderErr, db.ErrNotFound) {
@@ -229,3 +250,34 @@ func sameOrderIdentity(left, right string) bool {
 	right = strings.TrimSuffix(strings.TrimSpace(right), "@goofish")
 	return left != "" && right != "" && left == right
 }
+// settledTradeEvidence 判断缺少订单号的未知角色简化事件是否已被同一会话或同一商品的已结算订单覆盖。
+// 完整事件已走完发货流程后，重复到达的简化报文应视为已解决，而不是反复延期并最终打扰人工。
+func (c *Center) settledTradeEvidence(ctx context.Context, task Task) (bool, string, error) {
+	if c == nil || c.store == nil || c.store.Orders == nil {
+		return false, "order_store_unavailable", nil
+	}
+	// isResolved 局部化判断"订单已不再待发货"的语义：发货运维场景里"已走完发货阶段"等价于不再待发货。
+	isResolved := func(order *db.Order) bool {
+		return order != nil && !isPendingShipOrder(order)
+	}
+	if chatID := strings.TrimSpace(task.ChatID); chatID != "" {
+		order, queryErr := c.store.Orders.FindLatestByChat(ctx, task.AccountID, chatID, task.BuyerID, task.ItemID)
+		if queryErr != nil {
+			return false, "", fmt.Errorf("核对简化事件会话订单: %w", queryErr)
+		}
+		if isResolved(order) {
+			return true, "order_already_resolved", nil
+		}
+	}
+	if itemID := strings.TrimSpace(task.ItemID); itemID != "" {
+		order, queryErr := c.store.Orders.FindLatestByItem(ctx, task.AccountID, itemID, task.BuyerID)
+		if queryErr != nil {
+			return false, "", fmt.Errorf("核对简化事件商品订单: %w", queryErr)
+		}
+		if isResolved(order) {
+			return true, "order_already_resolved", nil
+		}
+	}
+	return false, "", nil
+}
+
