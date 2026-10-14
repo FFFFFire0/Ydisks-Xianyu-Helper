@@ -141,6 +141,7 @@ type DeferredAutomationTask struct {
 	DueAt        int64
 	ClaimVersion int
 	ErrorMessage string
+	CreatedAt    time.Time
 }
 
 // ErrDeferredTaskLeaseLost 用于本次流程后续判断的ErrDeferred任务LeaseLost
