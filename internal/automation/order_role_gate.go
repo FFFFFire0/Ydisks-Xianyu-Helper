@@ -250,24 +250,15 @@ func sameOrderIdentity(left, right string) bool {
 	right = strings.TrimSuffix(strings.TrimSpace(right), "@goofish")
 	return left != "" && right != "" && left == right
 }
-// settledTradeEvidence 判断缺少订单号的未知角色简化事件是否已被同一会话或同一商品的已结算订单覆盖。
+// settledTradeEvidence 判断缺少订单号的未知角色简化事件是否已被同一商品或同一会话的已结算订单覆盖。
 // 完整事件已走完发货流程后，重复到达的简化报文应视为已解决，而不是反复延期并最终打扰人工。
 func (c *Center) settledTradeEvidence(ctx context.Context, task Task) (bool, string, error) {
 	if c == nil || c.store == nil || c.store.Orders == nil {
 		return false, "order_store_unavailable", nil
 	}
-	// isResolved 局部化判断"订单已不再待发货"的语义：发货运维场景里"已走完发货阶段"等价于不再待发货。
+	// isResolved 局部化"订单已不再待发货"的语义；与 isPendingShipOrder 互为反义，避免依赖不存在的辅助函数。
 	isResolved := func(order *db.Order) bool {
 		return order != nil && !isPendingShipOrder(order)
-	}
-	if chatID := strings.TrimSpace(task.ChatID); chatID != "" {
-		order, queryErr := c.store.Orders.FindLatestByChat(ctx, task.AccountID, chatID, task.BuyerID, task.ItemID)
-		if queryErr != nil {
-			return false, "", fmt.Errorf("核对简化事件会话订单: %w", queryErr)
-		}
-		if isResolved(order) {
-			return true, "order_already_resolved", nil
-		}
 	}
 	if itemID := strings.TrimSpace(task.ItemID); itemID != "" {
 		order, queryErr := c.store.Orders.FindLatestByItem(ctx, task.AccountID, itemID, task.BuyerID)
@@ -278,6 +269,15 @@ func (c *Center) settledTradeEvidence(ctx context.Context, task Task) (bool, str
 			return true, "order_already_resolved", nil
 		}
 	}
+	if chatID := strings.TrimSpace(task.ChatID); chatID != "" {
+		// 会话维度查待发货订单；命中后再用 isResolved 反向判断，避免新增 FindLatestByChat 函数。
+		order, queryErr := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, chatID, task.BuyerID, task.ItemID)
+		if queryErr != nil {
+			return false, "", fmt.Errorf("核对简化事件会话订单: %w", queryErr)
+		}
+		if isResolved(order) {
+			return true, "order_already_resolved", nil
+		}
+	}
 	return false, "", nil
 }
-
