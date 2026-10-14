@@ -220,6 +220,34 @@ func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, 
 	return o.Get(ctx, orderID)
 }
 
+// FindLatestByItem 按账号和商品查找最近一笔订单，不限制订单状态，可选买家约束。
+// 供未知角色简化事件在缺少会话标识时判断「同一商品的交易是否已经处理完毕」使用。
+func (o *Orders) FindLatestByItem(ctx context.Context, cookieID, itemID, buyerID string) (*Order, error) {
+	// accountID、productID 保存清理后的账号和商品标识；任一缺失时无从匹配。
+	accountID := strings.TrimSpace(cookieID)
+	productID := strings.TrimSpace(itemID)
+	if accountID == "" || productID == "" {
+		return nil, nil
+	}
+	// where、args 保存跨数据库通用的订单筛选条件。
+	where := []string{"cookie_id=?", "item_id=?", "deleted_at IS NULL"}
+	args := []any{accountID, productID}
+	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
+		where = append(where, "buyer_id IN (?,?)")
+		args = append(args, normalizedBuyerID, normalizedBuyerID+"@goofish")
+	}
+	// orderID 保存查询出的最近一笔订单业务标识。
+	var orderID string
+	query := `SELECT order_id FROM orders WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC, order_id DESC LIMIT 1`
+	if err := o.DB.QueryRowContext(ctx, query, args...).Scan(&orderID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return o.Get(ctx, orderID)
+}
+
 // ByCookiePage 分页读取账号订单，供需要完整扫描的后台任务使用。
 func (o *Orders) ByCookiePage(ctx context.Context, cookieID string, limit, offset int) ([]OrderRow, error) {
 	if limit <= 0 {
