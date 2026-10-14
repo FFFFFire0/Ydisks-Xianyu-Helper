@@ -599,6 +599,12 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 			continue
 		}
 		// finishErr 保存暂停事件重放终态的持久化错误；只有它成功后才记录重放成功或失败。
+		if errors.Is(runErr, errSellerRoleEvidencePending) {
+			// 未知角色事件等待本地事实属于良性等待：不消耗重试预算、不进入死信，也不触发人工告警。
+			if s.postponeEvidencePendingTask(ctx, pending) {
+				continue
+			}
+		}
 		finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, runErr == nil, errorString(runErr))
 		if finishErr != nil {
 			s.center.logger.Warn("保存暂停事件重放结果失败", "task_id", pending.ID, "err", finishErr)
@@ -616,6 +622,40 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 		}
 	}
 	return resultErr
+}
+
+// postponeEvidencePendingTask 处理「未知角色事件暂缺本地卖家事实」的良性重放失败。
+// 返回 true 表示任务已被放回重试队列或超时自动关闭，调用方无需再写终态。
+func (s *Scheduler) postponeEvidencePendingTask(ctx context.Context, pending db.DeferredAutomationTask) bool {
+	// 超龄仍无事实的报文按重复简化事件静默关闭。
+	if !pending.CreatedAt.IsZero() && time.Since(pending.CreatedAt) > unknownRoleEvidenceMaxAge {
+		if closeErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, true, ""); closeErr != nil {
+			s.center.logger.Warn("关闭超龄未知角色延期任务失败", "task_id", pending.ID, "err", closeErr)
+			return false
+		}
+		s.center.logger.Info("未知角色延期任务超时仍缺本地事实，已按重复简化事件自动关闭", "task_id", pending.ID, "account", pending.CookieID, "trigger", pending.TriggerType)
+		return true
+	}
+	// postponeDue 沿用既有指数退避（上限 1 小时）；等待事实不消耗 5 次重试预算。
+	postponeDue := time.Now().UTC().Unix() + int64(evidencePendingRetryDelay(pending.ClaimVersion)/time.Second)
+	if postponeErr := s.center.store.Automation.PostponeDeferredTask(ctx, pending.ID, pending.ClaimVersion, postponeDue, "等待本地卖家事实"); postponeErr != nil {
+		s.center.logger.Warn("延期等待本地事实的未知角色任务失败", "task_id", pending.ID, "err", postponeErr)
+		return false
+	}
+	s.center.logger.Info("未知角色事件重放仍缺本地卖家事实，已延期继续等待", "task_id", pending.ID, "account", pending.CookieID, "trigger", pending.TriggerType)
+	return true
+}
+
+// evidencePendingRetryDelay 计算未知角色事件等待本地事实的重试间隔，与延期队列的指数退避保持一致（上限 1 小时）。
+func evidencePendingRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := 5 * time.Minute * time.Duration(1<<(attempt-1))
+	if delay > time.Hour {
+		return time.Hour
+	}
+	return delay
 }
 
 // notifyDeferredTaskNeedsReview 为进入死信或无法安全收口的延期自动化任务发送一次人工处理通知。
