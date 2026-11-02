@@ -8,8 +8,7 @@
 
 | 场景 | 行为 |
 |---|---|
-| 你从闲鱼 App 或后台手动发消息 | 该会话写入暂停窗口（默认 10 分钟，按账号设置） |
-| 暂停范围＝仅暂停 AI（默认开） | 关键词回复、默认回复照常；AI 不插话 |
+| 你从闲鱼 App 或后台手动发消息 | 该会话写入暂停窗口（默认 10 分钟，按账号设置） || 暂停范围＝仅暂停 AI（默认开） | 关键词回复、默认回复照常；AI 不插话 |
 | 暂停范围＝暂停全部 | 该会话整条自动回复链静默，商品首次回复也跳过 |
 | 暂停分钟数＝0 | 关闭该能力 |
 | 机器人自己发卡/关键词 | 回显被发送确认器消费，不会触发暂停 |
@@ -18,12 +17,27 @@
 
 配置位置：**账号管理 → AI 助手设置 → 人工接管**（开关 + 分钟数输入框）。
 
+### 人工发送的两条识别路径
+
+1. **手机闲鱼 App**：消息作为「自身回显」回到 WebSocket，未被自动化发送确认消费 → 判定人工；
+2. **后台在线聊天 / 管理 API**：发送走 `outgoingMessageCoordinator`，不登记回显等待项 → 发送成功后直接判定人工（`outgoing_message_coordinator.go` 的 `sendText` / `sendImage`）。
+
+> 早期版本只做了第 1 条，导致从后台聊天窗口发消息不会触发暂停。v3 补上了第 2 条。
+
 ## 数据库
 
 新增迁移 `00060_ai_manual_pause.sql`（sqlite / mysql / postgres 三方言）：
 
 - `ai_reply_settings` 增加 `manual_pause_minutes`（默认 10）、`manual_pause_ai_only`（默认 1）
 - 新表 `ai_manual_pauses(cookie_id, chat_id, until_at, ai_only, updated_at)`，主键 `(cookie_id, chat_id)`
+
+新增迁移 `00061_ai_manual_pause_integer_bool.sql`（三方言）：
+
+- **修复**：00060 在 Postgres 把布尔列建成了 `BOOLEAN`，而应用按整数读写，触发
+  `ERROR: COALESCE types boolean and integer cannot be matched`。
+- 00061 在 Postgres 用 `DO $$ ... $$` 幂等地把 `manual_pause_ai_only` 与 `ai_only`
+  转成 `INTEGER`（仅当列类型仍为 boolean 时执行）；SQLite/MySQL 已是整数，为空操作。
+- 已经手工执行过 `ALTER COLUMN ... TYPE INTEGER` 的库，00061 会自动跳过。
 
 ## 改动文件清单
 

@@ -66,6 +66,13 @@ func (c *outgoingMessageCoordinator) sendText(ctx context.Context, chatID, toUse
 	if err := c.confirmOutgoingEcho(ctx, echoWaiter, chatID); err != nil {
 		return err
 	}
+	if echoWaiter == nil {
+		// 后台或 API 手工发送不会登记回显等待项，直接按人工接管记录暂停窗口。
+		a.recordManualTakeover(ctx, OutgoingChatMessage{
+			AccountID: a.CookieID, ChatID: chatID, BuyerID: toUserID, Text: text,
+			MessageType: "text", ObservedAt: time.Now().UTC().UnixMilli(),
+		})
+	}
 	// observer、ok 是可选出站旁路观察器及其接口匹配结果；旁路失败不能改变平台发送成功结果。
 	if observer, ok := a.handler.(outgoingChatHandler); ok {
 		// key 是 UI 创建的待发送消息关联键，避免旁路重复插入同一文本。
@@ -121,7 +128,17 @@ func (c *outgoingMessageCoordinator) sendImage(ctx context.Context, chatID, toUs
 		}
 		return classified
 	}
-	return c.confirmOutgoingEcho(ctx, echoWaiter, chatID)
+	if err := c.confirmOutgoingEcho(ctx, echoWaiter, chatID); err != nil {
+		return err
+	}
+	if echoWaiter == nil {
+		// 后台或 API 手工发送图片同样视为人工接管。
+		a.recordManualTakeover(ctx, OutgoingChatMessage{
+			AccountID: a.CookieID, ChatID: chatID, BuyerID: toUserID, Content: imageURL,
+			MessageType: "image", ObservedAt: time.Now().UTC().UnixMilli(),
+		})
+	}
+	return nil
 }
 
 // registerOutgoingEcho 按调用上下文决定是否登记自动化出站回显确认；普通人工聊天保持原有非阻塞旁路。
