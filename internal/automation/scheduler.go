@@ -9,10 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/xianyu/mtop"
 )
+
+// isPlatformBlockErr 判断 err 是否表示该账号当前不应再向平台发出请求：风控验证、登录会话失效或 MTOP Token 无法恢复。
+// 批量扫描遇到这类错误必须立即停止同账号的其余任务，不能依赖冷却后自动重放。
+func isPlatformBlockErr(err error) bool {
+	return err != nil && (mtop.IsRiskVerificationErr(err) || mtop.IsSessionExpiredErr(err) || mtop.IsMTopTokenExpiredErr(err))
+}
 
 // defaultReviewRequestScanInterval 用于本次流程后续判断的defaultReview请求ScanInterval
 const defaultReviewRequestScanInterval = time.Minute
@@ -30,6 +38,17 @@ const pendingShipCatchupEnv = "XIANYU_PENDING_SHIP_CATCHUP"
 // defaultPendingShipCooldown 是同一订单两次兜底触发之间的最小间隔。
 // 付款事件在准备阶段失败时可能不会留下任何运行记录，若不设冷却会每分钟重试并放大上游压力。
 const defaultPendingShipCooldown = 10 * time.Minute
+
+// pendingShipObservationGap 是候选订单连续缺席超过多久后重新按新进入待发货计时（远大于分钟级扫描周期）。
+const pendingShipObservationGap = 10 * time.Minute
+
+// pendingShipObservation 保存一笔待发货候选订单被兜底扫描观测到的时间事实。
+type pendingShipObservation struct {
+	// first 是本次连续出现的首次观测时间，等待窗口据此计算。
+	first time.Time
+	// last 是最近一次观测时间，用于判断订单是否曾离开候选集合并清理过期条目。
+	last time.Time
+}
 
 // defaultPendingShipSettleWindow 是新进入待发货状态的订单在通用兜底触发前必须经历的观察窗口。
 // 该窗口让实时付款系统卡片优先到达并建立运行记录，避免调度器把尚在结算中的订单误判为事件丢失。
@@ -64,14 +83,21 @@ type Scheduler struct {
 	runOnce sync.Once
 	// done 在调度循环退出后关闭，供关闭流程等待全部调度工作停止。
 	done chan struct{}
-	// pendingShipMu 保护 pendingShipCooldown。
+	// pendingShipMu 保护 pendingShipCooldown 与 pendingShipObserved。
 	pendingShipMu sync.Mutex
+	// pendingShipObserved 记录兜底扫描对待发货候选订单的首次与最近观测时间，窗口只取决于首次观测，不受订单反复写入影响；
+	// 仅在持有 pendingShipMu 时读写，延迟初始化。
+	pendingShipObserved map[string]pendingShipObservation
 	// pendingShipCooldown 记录兜底扫描最近尝试过的订单时间，避免同一订单反复重试。
 	pendingShipCooldown map[string]time.Time
 	// pendingShipScanBudget 限制付款兜底和续跑扫描共享的单轮执行时间；零值使用生产默认值。
 	pendingShipScanBudget time.Duration
+	// pendingShipSettleWindow 是候选订单等待实时付款卡片的窗口；零值使用生产默认值，负值表示不等待（仅测试使用）。
+	pendingShipSettleWindow time.Duration
 	// pendingShipScanMaxTasks 限制每条待发货扫描单轮实际触发的任务数；零值使用生产默认值。
 	pendingShipScanMaxTasks int
+	// auditPrunedAt 是上次清理过期审计事件的 Unix 秒，仅由调度循环读写，零值表示尚未清理。
+	auditPrunedAt atomic.Int64
 }
 
 // NewScheduler 构造计划任务调度器。
@@ -146,6 +172,7 @@ func (s *Scheduler) WaitContext(ctx context.Context) error {
 
 // scan 封装scan业务协调。
 func (s *Scheduler) scan(ctx context.Context) {
+	s.pruneAuditEvents(ctx)
 	s.center.scanAccountTasks(ctx)
 	if // recovered、err 用于本次流程后续判断的recovered、err
 	recovered, err := s.center.store.Automation.RecoverDefinitelyUnsentReviewRuns(ctx); err != nil {
@@ -232,7 +259,7 @@ func (s *Scheduler) scan(ctx context.Context) {
 	pendingCancel()
 	// accountID、count 表示当前遍历过程中的账号ID、count
 	for accountID, count := range waitingForWS {
-		s.center.logger.Info("账号 WebSocket 尚未就绪，求评价任务等待下次扫描", "account", accountID, "orders", count)
+		s.center.logger.Debug("账号 WebSocket 尚未就绪，求评价任务等待下次扫描", "account", accountID, "orders", count)
 	}
 }
 
@@ -279,6 +306,8 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 	triggeredCount := 0
 	// afterOrderID 是逐页扫描的稳定游标，确保本轮有界。
 	afterOrderID := ""
+	// blockedAccounts 记录本轮已遇到风控、会话失效或 Token 耗尽的账号，其余运行留待下一轮，不再请求平台。
+	blockedAccounts := map[string]struct{}{}
 	for {
 		if ctx.Err() != nil {
 			s.center.logger.Warn("待发货续跑扫描达到本轮时间预算", "err", ctx.Err())
@@ -304,6 +333,10 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 				return
 			}
 			afterOrderID = candidate.Order.OrderID
+			// blocked 表示该运行所属账号本轮已被平台阻断，其运行不再发起请求。
+			if _, blocked := blockedAccounts[candidate.Order.CookieID]; blocked {
+				continue
+			}
 			// allowed、allowErr 保存账号可用性检查结果。
 			allowed, allowErr := s.center.accountAutomationAllowed(ctx, candidate.Order.CookieID)
 			if allowErr != nil {
@@ -315,10 +348,10 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			}
 			// paid、paidErr 保存付款自动发货的账号级开关检查结果，必须在重开运行之前检查：
 			// 开关关闭时 HandleTask 会直接返回而不收口运行，被重开的运行会留在 running 并继续持有租约，
-			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号开关与自动确认设置。
-			paid, paidErr := s.center.paidDeliveryAutoConfirmEnabled(ctx, candidate.Order.CookieID)
+			// 租约到期后失败运行恢复链路直接执行 executeRule，从而绕过账号自动发货总开关。
+			paid, paidErr := s.center.autoDeliveryEnabled(ctx, candidate.Order.CookieID)
 			if paidErr != nil {
-				s.center.logger.Warn("检查待发货续跑自动确认发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
+				s.center.logger.Warn("检查待发货续跑自动发货开关失败", "account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", paidErr)
 				continue
 			}
 			if !paid {
@@ -330,6 +363,12 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 				s.center.logger.Info("待发货运行不满足自动续跑条件，保留人工核对",
 					"account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID,
 					"run_id", candidate.RunID, "action_cursor", candidate.ActionCursor, "err", planErr)
+				continue
+			}
+			if candidate.Status == "canceled" && !candidate.HasDeliveryProof {
+				// 退款撤回后的已取消运行缺失发货凭证（例如旧版本取消时已清空）：确认发货会提交空凭证，
+				// 且无法证明买家收到的内容，必须停止自动确认并转人工核对，同时发送独立通知。
+				s.quarantineMissingProofResume(ctx, candidate)
 				continue
 			}
 			// 冷却窗口先做一次本地预约，避免多个调度器同时提交重开；已知抢占失败时会释放这次预约。
@@ -369,6 +408,9 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			if err := s.center.HandleTask(taskCtx, task); err != nil {
 				s.center.logger.Warn("待发货续跑任务执行失败",
 					"account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID, "err", err)
+				if isPlatformBlockErr(err) {
+					blockedAccounts[candidate.Order.CookieID] = struct{}{}
+				}
 			}
 			cancel()
 		}
@@ -394,15 +436,6 @@ func (s *Scheduler) pendingShipScanMaxTasksValue() int {
 	return defaultPendingShipScanMaxTasks
 }
 
-// scanDeferredTasks 领取并重放已到期延迟动作；错误独立记录，避免影响分钟级扫描的调度节奏。
-func (s *Scheduler) scanDeferredTasks(ctx context.Context) {
-	// deferredErr 保存本轮延迟动作状态收口错误，必须记录以便管理员追踪人工核对任务。
-	deferredErr := s.runDeferredTasks(ctx)
-	if deferredErr != nil {
-		s.center.logger.Error("自动化延迟任务状态收口失败", "err", deferredErr)
-	}
-}
-
 // runRecoveryTasks 封装运行Recovery任务列表业务协调。
 func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 	// resultErr 汇总本轮恢复任务的持久化错误，调用方可据此触发统一告警。
@@ -413,8 +446,14 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 		s.center.logger.Warn("扫描失败自动化运行失败", "err", err)
 		return err
 	}
+	// blockedAccounts 记录本轮已遇到风控、会话失效或 Token 耗尽的账号；其余恢复运行留待下一轮，不再请求平台。
+	blockedAccounts := map[string]struct{}{}
 	// run 表示当前遍历过程中的运行
 	for _, run := range runs {
+		// blocked 表示该恢复运行所属账号本轮已被平台阻断，其运行留待下一轮。
+		if _, blocked := blockedAccounts[run.CookieID]; blocked {
+			continue
+		}
 		if run.ActionStarted {
 			// reason 用于本次流程后续判断的原因
 			reason := "进程在外部动作执行期间中断，发送结果未知，已禁止自动重放"
@@ -502,6 +541,9 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 		task.Raw["automation_rule_id"] = run.RuleID
 		// executeErr 保存恢复运行本轮执行的最终结果，用于区分成功、延期和失败。
 		executeErr := s.center.executeRule(ctx, task, *rule)
+		if isPlatformBlockErr(executeErr) {
+			blockedAccounts[run.CookieID] = struct{}{}
+		}
 		switch {
 		case executeErr == nil:
 			s.center.logger.Info("自动化恢复任务执行成功", "run_id", run.ID, "account", task.AccountID, "order_id", task.OrderID)
@@ -551,132 +593,6 @@ func recoveryNeedsSender(task Task, rule db.AutomationRule, cursor int) bool {
 	}
 }
 
-// runDeferredTasks 封装运行Deferred任务列表业务协调。
-func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
-	// resultErr 汇总延迟任务最终状态写入失败，避免领取成功后状态异常被静默吞掉。
-	var resultErr error
-	// tasks、err 用于本次流程后续判断的tasks、err
-	tasks, err := s.center.store.Automation.ClaimDueDeferredTasks(ctx, 100)
-	if err != nil {
-		s.center.logger.Warn("扫描暂停期间自动化事件失败", "err", err)
-		return err
-	}
-	// pending 表示当前遍历过程中的pending
-	for _, pending := range tasks {
-		// task 用于本次流程后续判断的任务
-		var task Task
-		if // err 用于本次流程后续判断的err
-		err := json.Unmarshal([]byte(pending.TaskJSON), &task); err != nil {
-			// failureReason 是写入重试状态和人工处理通知共用的解析失败原因。
-			failureReason := "解析任务失败: " + err.Error()
-			// finishErr 表示解析失败后写入延迟任务重试或死信状态时的错误。
-			finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, false, failureReason)
-			if finishErr != nil {
-				s.center.logger.Error("保存解析失败的暂停事件状态失败", "task_id", pending.ID, "err", finishErr)
-				s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；保存任务状态失败："+finishErr.Error())
-				resultErr = errors.Join(
-					resultErr,
-					errAutomationNeedsReview,
-					fmt.Errorf("保存解析失败的暂停事件状态失败: %w", finishErr),
-				)
-			} else {
-				s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", pending.CookieID, "err", err)
-				if pending.ClaimVersion >= 5 {
-					s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；已达到自动重试上限")
-				}
-			}
-			continue
-		}
-		if task.Raw == nil {
-			task.Raw = map[string]any{}
-		}
-		task.Raw["automation_deferred_replay"] = true
-		// deferredAgain、runErr 用于本次流程后续判断的deferredAgain、runErr
-		deferredAgain, runErr := s.center.handleTask(ctx, task)
-		if deferredAgain {
-			// handleTask 已按新的 paused_until 重置同一任务；当前 claim 不再删除。
-			s.center.logger.Info("暂停期间自动化事件重放再次延期", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType)
-			continue
-		}
-		// finishErr 保存暂停事件重放终态的持久化错误；只有它成功后才记录重放成功或失败。
-		if errors.Is(runErr, errSellerRoleEvidencePending) {
-			// 未知角色事件等待本地事实属于良性等待：不消耗重试预算、不进入死信，也不触发人工告警。
-			if s.postponeEvidencePendingTask(ctx, pending) {
-				continue
-			}
-		}
-		finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, runErr == nil, errorString(runErr))
-		if finishErr != nil {
-			s.center.logger.Warn("保存暂停事件重放结果失败", "task_id", pending.ID, "err", finishErr)
-			s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件重放后无法保存任务状态："+finishErr.Error())
-			resultErr = errors.Join(resultErr, errAutomationNeedsReview, runErr, fmt.Errorf("保存暂停事件重放结果失败: %w", finishErr))
-			continue
-		}
-		if runErr == nil {
-			s.center.logger.Info("暂停期间自动化事件重放成功", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType)
-		} else {
-			s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType, "err", runErr)
-			if pending.ClaimVersion >= 5 {
-				s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件连续重放失败并已达到自动重试上限："+runErr.Error())
-			}
-		}
-	}
-	return resultErr
-}
-
-// postponeEvidencePendingTask 处理「未知角色事件暂缺本地卖家事实」的良性重放失败。
-// 返回 true 表示任务已被放回重试队列或超时自动关闭，调用方无需再写终态。
-func (s *Scheduler) postponeEvidencePendingTask(ctx context.Context, pending db.DeferredAutomationTask) bool {
-	// 超龄仍无事实的报文按重复简化事件静默关闭。
-	if !pending.CreatedAt.IsZero() && time.Since(pending.CreatedAt) > unknownRoleEvidenceMaxAge {
-		if closeErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, true, ""); closeErr != nil {
-			s.center.logger.Warn("关闭超龄未知角色延期任务失败", "task_id", pending.ID, "err", closeErr)
-			return false
-		}
-		s.center.logger.Info("未知角色延期任务超时仍缺本地事实，已按重复简化事件自动关闭", "task_id", pending.ID, "account", pending.CookieID, "trigger", pending.TriggerType)
-		return true
-	}
-	// postponeDue 沿用既有指数退避（上限 1 小时）；等待事实不消耗 5 次重试预算。
-	postponeDue := time.Now().UTC().Unix() + int64(evidencePendingRetryDelay(pending.ClaimVersion)/time.Second)
-	if postponeErr := s.center.store.Automation.PostponeDeferredTask(ctx, pending.ID, pending.ClaimVersion, postponeDue, "等待本地卖家事实"); postponeErr != nil {
-		s.center.logger.Warn("延期等待本地事实的未知角色任务失败", "task_id", pending.ID, "err", postponeErr)
-		return false
-	}
-	s.center.logger.Info("未知角色事件重放仍缺本地卖家事实，已延期继续等待", "task_id", pending.ID, "account", pending.CookieID, "trigger", pending.TriggerType)
-	return true
-}
-
-// evidencePendingRetryDelay 计算未知角色事件等待本地事实的重试间隔，与延期队列的指数退避保持一致（上限 1 小时）。
-func evidencePendingRetryDelay(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	delay := 5 * time.Minute * time.Duration(1<<(attempt-1))
-	if delay > time.Hour {
-		return time.Hour
-	}
-	return delay
-}
-
-// notifyDeferredTaskNeedsReview 为进入死信或无法安全收口的延期自动化任务发送一次人工处理通知。
-func (s *Scheduler) notifyDeferredTaskNeedsReview(ctx context.Context, pending db.DeferredAutomationTask, task Task, reason string) {
-	if s == nil || s.center == nil {
-		return
-	}
-	if task.AccountID == "" {
-		task.AccountID = pending.CookieID
-	}
-	if task.TriggerType == "" {
-		task.TriggerType = pending.TriggerType
-	}
-	// notificationKey 是同一延期任务共享的稳定人工处理通知键，重复扫描不会制造重复告警。
-	notificationKey := fmt.Sprintf("manual-intervention:deferred-task:%d", pending.ID)
-	// notifyCtx 保证任务状态写失败或原始重放预算取消后，告警仍有独立的短时入队预算。
-	notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
-	s.center.notifications.notifyManualIntervention(notifyCtx, task, "暂停自动化事件重放", reason, notificationKey)
-	notifyCancel()
-}
-
 // errorString 封装错误String业务协调。
 func errorString(err error) string {
 	if err == nil {
@@ -694,6 +610,12 @@ func reviewRequestRuleDue(order db.Order, rule db.AutomationRule) bool {
 	}
 	// baseRaw 用于本次流程后续判断的base原始
 	baseRaw := firstNonEmpty(order.ShippedAt, order.UpdatedAt, order.CreatedAt)
+	// shippedAt 是订单发货时间基点，回溯窗口始终以它为准，与是否已求评过无关。
+	shippedAt := parseDBTime(baseRaw)
+	// 规则停用期间积压的旧订单在重新启用时不得被补发：发货已超出回溯窗口的订单一律跳过。
+	if !shippedAt.IsZero() && time.Since(shippedAt) > time.Duration(cfg.effectiveLookbackHours())*time.Hour {
+		return false
+	}
 	// waitHours 用于本次流程后续判断的waitHours
 	waitHours := cfg.AfterShippedHours
 	if order.ReviewRequestCount > 0 && strings.TrimSpace(order.LastReviewRequestAt) != "" {
@@ -713,6 +635,25 @@ type reviewRuleConfig struct {
 	AfterShippedHours   int
 	RepeatIntervalHours int
 	MaxAttempts         int
+	// MaxLookbackHours 是回溯窗口小时数：发货时间早于该窗口的订单不再求评价；0 表示使用默认值。
+	MaxLookbackHours int
+}
+
+// effectiveLookbackHours 返回实际生效的回溯窗口小时数。
+//
+// 未显式配置时取「走完全部求评流程所需时长 + 24 小时」，让正常流程不受影响，
+// 同时过滤规则停用期间积压的历史订单；显式配置小于首次等待时长时上调到首次等待时长，
+// 避免规则永远无法触发。
+func (c reviewRuleConfig) effectiveLookbackHours() int {
+	// minHours 是正常走完全部求评次数所需的最短时长。
+	minHours := c.AfterShippedHours + (c.MaxAttempts-1)*c.RepeatIntervalHours
+	if c.MaxLookbackHours <= 0 {
+		return minHours + 24
+	}
+	if c.MaxLookbackHours < c.AfterShippedHours {
+		return c.AfterShippedHours
+	}
+	return c.MaxLookbackHours
 }
 
 // parseReviewRuleConfig 封装parseReview规则配置业务协调。
@@ -742,6 +683,10 @@ func parseReviewRuleConfig(raw string) reviewRuleConfig {
 	if // v 用于本次流程后续判断的v
 	v := intFromAny(m["max_attempts"]); v > 0 {
 		cfg.MaxAttempts = v
+	}
+	if // v 是显式配置的回溯窗口小时数，非正值保持默认
+	v := intFromAny(m["max_lookback_hours"]); v > 0 {
+		cfg.MaxLookbackHours = v
 	}
 	return cfg
 }

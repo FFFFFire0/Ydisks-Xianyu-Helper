@@ -436,6 +436,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/sales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1AnalyticsSales */
+        get: operations["getApiV1AnalyticsSales"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/automation-audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * getApiV1AutomationAuditEvents
+         * @description 分页读取当前用户的自动化行为审计事件（规则日志），含跳过、排队、动作结果与终态；摘要不含卡密或消息正文。
+         */
+        get: operations["getApiV1AutomationAuditEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/automation-issues": {
         parameters: {
             query?: never;
@@ -631,6 +668,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cards/{card_id}/api-editor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1CardsBycard_idApiEditor */
+        get: operations["getApiV1CardsBycard_idApiEditor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cards/{card_id}/sale-records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * getApiV1CardsBycard_idSaleRecords
+         * @description 分页读取卡密组的售出记录（含已发出的卡密明文），仅所属用户可读；响应禁止缓存。
+         */
+        get: operations["getApiV1CardsBycard_idSaleRecords"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/cards/{card_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * getApiV1CardsBycard_idExport
+         * @description 导出卡密。scope=unsold 导出 data 卡密组当前库存 TXT（一行一条）；scope=sold 导出售出记录 CSV（UTF-8 BOM）。文件含卡密明文，响应禁止缓存。
+         */
+        get: operations["getApiV1CardsBycard_idExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cards/{card_id}/details": {
         parameters: {
             query?: never;
@@ -710,6 +804,23 @@ export interface paths {
         put?: never;
         /** postApiV1ChatImages */
         post: operations["postApiV1ChatImages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat/library-images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** postApiV1ChatLibraryImages */
+        post: operations["postApiV1ChatLibraryImages"];
         delete?: never;
         options?: never;
         head?: never;
@@ -962,6 +1073,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/items/{cookie_id}/{item_id}/ai-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取商品级 AI 客服配置 */
+        get: operations["getApiV1ItemsBycookie_idByitem_idAiSettings"];
+        /** 保存商品级 AI 客服配置 */
+        put: operations["putApiV1ItemsBycookie_idByitem_idAiSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/items/{cookie_id}/{item_id}/multi-quantity-delivery": {
         parameters: {
             query?: never;
@@ -1059,6 +1188,112 @@ export interface paths {
         /** postApiV1ItemsPublish */
         post: operations["postApiV1ItemsPublish"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出图片库图片 */
+        get: operations["getApiV1LibraryImages"];
+        put?: never;
+        /** 上传图片到图片库 */
+        post: operations["postApiV1LibraryImages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/images/{image_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取图片库图片内容 */
+        get: operations["getApiV1LibraryImagesByimage_idContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/images/{image_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除图片库图片 */
+        delete: operations["deleteApiV1LibraryImagesByimage_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/product-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出商品模板 */
+        get: operations["getApiV1LibraryProductTemplates"];
+        put?: never;
+        /** 创建商品模板 */
+        post: operations["postApiV1LibraryProductTemplates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/product-templates/publish-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 按模板与账号生成批量铺货预检 */
+        post: operations["postApiV1LibraryProductTemplatesPublishPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/library/product-templates/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 查询商品模板 */
+        get: operations["getApiV1LibraryProductTemplatesBytemplate_id"];
+        /** 更新商品模板 */
+        put: operations["putApiV1LibraryProductTemplatesBytemplate_id"];
+        post?: never;
+        /** 删除商品模板 */
+        delete: operations["deleteApiV1LibraryProductTemplatesBytemplate_id"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1179,6 +1414,23 @@ export interface paths {
         put?: never;
         /** postApiV1ItemsPublishCategoriesRecommend */
         post: operations["postApiV1ItemsPublishCategoriesRecommend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1LogsRuntime */
+        get: operations["getApiV1LogsRuntime"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1356,6 +1608,26 @@ export interface paths {
         post?: never;
         /** deleteApiV1OrdersByorder_id */
         delete: operations["deleteApiV1OrdersByorder_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{order_id}/delivered-cards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * getApiV1OrdersByorder_idDeliveredCards
+         * @description 返回订单自动发货时发出的卡密（含明文），仅订单所属用户可读；升级前的订单没有记录，返回空数组。响应禁止缓存。
+         */
+        get: operations["getApiV1OrdersByorder_idDeliveredCards"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1652,6 +1924,59 @@ export interface paths {
         post?: never;
         /** deleteApiV1ReplyRulesBycidTypedByid */
         delete: operations["deleteApiV1ReplyRulesBycidTypedByid"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reply-rules/greetings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1ReplyRulesGreetings */
+        get: operations["getApiV1ReplyRulesGreetings"];
+        put?: never;
+        /** postApiV1ReplyRulesGreetings */
+        post: operations["postApiV1ReplyRulesGreetings"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reply-rules/greetings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** putApiV1ReplyRulesGreetingsByid */
+        put: operations["putApiV1ReplyRulesGreetingsByid"];
+        post?: never;
+        /** deleteApiV1ReplyRulesGreetingsByid */
+        delete: operations["deleteApiV1ReplyRulesGreetingsByid"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reply-rules/greetings/clear-records/{cookie_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** postApiV1ReplyRulesGreetingsClearRecordsBycookie_id */
+        post: operations["postApiV1ReplyRulesGreetingsClearRecordsBycookie_id"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2041,6 +2366,30 @@ export interface components {
             attempt_count: number;
             updated_at: string;
         };
+        AutomationAuditEventResponse: {
+            id: number;
+            cookie_id: string;
+            order_id: string;
+            item_id: string;
+            rule_id: number;
+            run_id: number;
+            trigger_type: string;
+            source: string;
+            event_type: string;
+            status: string;
+            action_type: string;
+            summary: string;
+            reason: string;
+            created_at: number;
+        };
+        AutomationAuditEventListResponse: {
+            success: boolean;
+            data: components["schemas"]["AutomationAuditEventResponse"][];
+            total: number;
+            page: number;
+            page_size: number;
+            total_pages: number;
+        };
         AutomationIssuesResponse: {
             runs: components["schemas"]["AutomationRunIssue"][];
             pending_tasks: components["schemas"]["DeferredAutomationIssue"][];
@@ -2136,6 +2485,8 @@ export interface components {
             enabled: boolean;
             reply_content: string;
             reply_image_url?: string;
+            /** @description 图片库图片主键；与 reply_image_url 互斥，0 或省略表示未使用图片库 */
+            reply_library_image_id?: number;
             reply_once: boolean;
         };
         AccountTaskSettingsResponse: {
@@ -2199,18 +2550,40 @@ export interface components {
         };
         KeywordBasicResponse: {
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式；缺省时使用 keyword */
+            expressions?: string[];
+            /**
+             * @description 匹配模式；历史规则按 contains 处理，contains 下每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词
+             * @enum {string}
+             */
+            match_type?: "contains" | "regexp";
             reply: string;
         };
         KeywordBasicListResponse: components["schemas"]["KeywordBasicResponse"][];
         KeywordItemResponse: {
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式 */
+            expressions?: string[];
+            /**
+             * @description 匹配模式
+             * @enum {string}
+             */
+            match_type?: "contains" | "regexp";
             reply: string;
             item_id: string;
         };
         KeywordItemListResponse: components["schemas"]["KeywordItemResponse"][];
         KeywordTypedResponse: {
             id: number;
+            /** @description 第一条表达式的兼容单值字段 */
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复 */
+            expressions: string[];
+            /**
+             * @description contains 为大小写不敏感普通包含（每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词，任一命中即触发），regexp 为大小写不敏感 Go/RE2 正则（| 为正则分支，不做拆分）
+             * @enum {string}
+             */
+            match_type: "contains" | "regexp";
             reply: string;
             /** @description 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复 */
             item_id: string;
@@ -2218,10 +2591,21 @@ export interface components {
             item_ids: string[];
             type: string;
             image_url: string;
+            /** @description 图片库图片主键；与 image_url 互斥，0 或省略表示未使用图片库 */
+            library_image_id?: number;
         };
         KeywordTypedListResponse: components["schemas"]["KeywordTypedResponse"][];
         KeywordCreateRequest: {
+            /** @description 兼容旧单值调用方；新调用方可同时传 expressions */
             keyword: string;
+            /** @description 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复 */
+            expressions?: string[];
+            /**
+             * @description 匹配模式；regexp 使用大小写不敏感 Go/RE2
+             * @default contains
+             * @enum {string}
+             */
+            match_type: "contains" | "regexp";
             reply: string;
             /** @description 兼容旧单值调用方；多选时由 item_ids 合并而来 */
             item_id: string;
@@ -2229,11 +2613,35 @@ export interface components {
             item_ids: string[];
             type: string;
             image_url: string;
+            /** @description 图片库图片主键；与 image_url 互斥，0 或省略表示未使用图片库 */
+            library_image_id?: number;
         };
         DefaultReplyMapResponse: {
             [key: string]: components["schemas"]["DefaultReplyResponse"];
         };
         DefaultReplyListResponse: components["schemas"]["DefaultReplyResponse"][] | null;
+        ItemGreetingRequest: {
+            cookie_id?: string;
+            name?: string;
+            enabled: boolean;
+            reply_content: string;
+            reply_image_url?: string;
+            /** @description 图片库图片主键；与 reply_image_url 互斥，0 或省略表示未使用图片库 */
+            reply_library_image_id?: number;
+            item_ids: string[];
+        };
+        ItemGreetingResponse: {
+            id: number;
+            cookie_id: string;
+            name: string;
+            enabled: boolean;
+            reply_content: string;
+            reply_image_url: string;
+            /** @description 图片库图片主键；与 reply_image_url 互斥，0 或省略表示未使用图片库 */
+            reply_library_image_id?: number;
+            item_ids: string[];
+        };
+        ItemGreetingListResponse: components["schemas"]["ItemGreetingResponse"][];
         ItemReplyResponse: {
             item_id?: string;
             cookie_id?: string;
@@ -2248,6 +2656,10 @@ export interface components {
             max_discount_amount: number;
             max_bargain_rounds: number;
             custom_prompts: string;
+            /** @enum {string} */
+            ai_mode: "bargain_only" | "full_service";
+            manual_pause_minutes?: number;
+            manual_pause_ai_only?: boolean;
         };
         AIReplySettingsUpdateRequest: {
             ai_enabled: boolean;
@@ -2256,6 +2668,10 @@ export interface components {
             max_discount_amount: number;
             max_bargain_rounds: number;
             custom_prompts: string;
+            /** @enum {string} */
+            ai_mode?: "bargain_only" | "full_service";
+            manual_pause_minutes?: number;
+            manual_pause_ai_only?: boolean;
         };
         AIReplySettingsMapResponse: {
             [key: string]: components["schemas"]["AIReplySettingsResponse"];
@@ -2439,7 +2855,11 @@ export interface components {
             api_config?: components["schemas"]["APICardConfigMutation"] | string;
             text_content?: string;
             data_content?: string;
+            /** @description 编辑 data 卡库存时打开弹窗所见的库存快照；提交后服务端仅在当前库存仍与之相同时覆盖，否则返回 409。 */
+            expected_data_content?: string;
             image_url?: string;
+            /** @description 图片库图片主键；与 image_url 互斥，0 或省略表示未使用图片库 */
+            library_image_id?: number;
             description?: string;
             enabled?: boolean;
             delay_seconds?: number;
@@ -2465,6 +2885,39 @@ export interface components {
             failed: number;
             rows: components["schemas"]["CardBatchResultResponse"][];
         };
+        CardSaleRecordResponse: {
+            id: number;
+            card_id: number;
+            card_name: string;
+            card_type: string;
+            /** @description 实际发给买家的卡密正文或 API 返回内容。 */
+            content: string;
+            /**
+             * @description sold 为已确认售出，reserved 为已扣库存但发送结果待核对。
+             * @enum {string}
+             */
+            status: "reserved" | "sold";
+            cookie_id: string;
+            order_id: string;
+            item_id: string;
+            buyer_id: string;
+            /** @description 扣减库存时刻（Unix 秒）。 */
+            created_at: number;
+            /** @description 确认售出时刻（Unix 秒），未确认为 0。 */
+            sold_at: number;
+        };
+        CardSaleRecordListResponse: {
+            success: boolean;
+            data: components["schemas"]["CardSaleRecordResponse"][];
+            total: number;
+            page: number;
+            page_size: number;
+            total_pages: number;
+        };
+        OrderDeliveredCardsResponse: {
+            success: boolean;
+            data: components["schemas"]["CardSaleRecordResponse"][];
+        };
         CardAppendResponse: {
             success: boolean;
             added: number;
@@ -2482,6 +2935,8 @@ export interface components {
             text_content: string;
             data_content: string;
             image_url: string;
+            /** @description 图片库图片主键；与 image_url 互斥，0 或省略表示未使用图片库 */
+            library_image_id?: number;
             description: string;
             enabled: boolean;
             delay_seconds: number;
@@ -2489,6 +2944,8 @@ export interface components {
             spec_name: string;
             spec_value: string;
             user_id?: number;
+            /** @description 该卡密组已确认售出的记录数。 */
+            sold_count?: number;
         };
         APICardConfigMutation: {
             /** Format: uri */
@@ -2531,7 +2988,22 @@ export interface components {
             ready: boolean;
             validation_error?: string;
         };
+        CardAPIEditorResponse: {
+            url: string;
+            /** @enum {string} */
+            method: "GET" | "POST";
+            timeout_seconds: number;
+            content_type: string;
+            /** @description 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录 */
+            headers: string;
+            params: string;
+            body: string;
+            response_path: string;
+            retry_enabled: boolean;
+        };
         CardAPITestRequest: {
+            /** @description 已保存卡密标识；提供时合并其模板并校验当前用户所有权 */
+            card_id?: number;
             api_config: components["schemas"]["APICardConfigMutation"] | string;
         };
         CardAPITestResponse: {
@@ -2542,6 +3014,18 @@ export interface components {
             response_fields: string[];
             extracted_value?: string;
             response_preview?: string;
+        };
+        /** @enum {string} */
+        ItemAIOverride: "inherit" | "enabled" | "disabled";
+        ItemAISettingsUpdateRequest: {
+            ai_override: components["schemas"]["ItemAIOverride"];
+            item_context: string;
+        };
+        ItemAISettingsResponse: {
+            cookie_id: string;
+            item_id: string;
+            ai_override: components["schemas"]["ItemAIOverride"];
+            item_context: string;
         };
         ItemListResponse: {
             id: number;
@@ -2556,6 +3040,7 @@ export interface components {
             is_multi_spec: boolean;
             multi_quantity_delivery: boolean;
             is_multi_qty_ship: boolean;
+            ai_override: components["schemas"]["ItemAIOverride"];
         };
         ItemListArrayResponse: components["schemas"]["ItemListResponse"][];
         ItemDetailResponse: {
@@ -2878,13 +3363,18 @@ export interface components {
             type: "ready";
             at: number;
         };
+        ChatPongEvent: {
+            /** @enum {string} */
+            type: "pong";
+            at: number;
+        };
         ChatEvent: {
             /** @enum {string} */
             type: "message.created" | "message.updated";
             message?: components["schemas"]["ChatMessage"];
             session?: components["schemas"]["ChatSession"];
         };
-        ChatWebSocketEvent: components["schemas"]["ChatReadyEvent"] | components["schemas"]["ChatEvent"];
+        ChatWebSocketEvent: components["schemas"]["ChatReadyEvent"] | components["schemas"]["ChatPongEvent"] | components["schemas"]["ChatEvent"];
         ChatMessageRequest: {
             account_id: string;
             chat_id: string;
@@ -2928,15 +3418,31 @@ export interface components {
         ChatQuickReply: {
             id: number;
             account_id: string;
+            /** @description 文字快捷回复正文；图片快捷回复为空字符串 */
             content: string;
+            /** @description 图片快捷回复引用的图片库图片主键；0 或省略表示文字快捷回复 */
+            library_image_id?: number;
             created_at: number;
         };
         ChatQuickReplyList: {
             quick_replies: components["schemas"]["ChatQuickReply"][];
         };
+        /** @description 文字快捷回复提供 content；图片快捷回复提供 library_image_id 且 content 必须为空，两者二选一 */
         ChatQuickReplyCreateRequest: {
             account_id: string;
-            content: string;
+            content?: string;
+            library_image_id?: number;
+        };
+        /** @description 发送当前用户图片库中的图片；图片字节由服务端按发送账号所有者读取，并走与手动上传相同的上传和真实宽高链路 */
+        ChatLibraryImageSendRequest: {
+            account_id: string;
+            chat_id: string;
+            peer_user_id: string;
+            library_image_id: number;
+            peer_name?: string;
+            peer_avatar_url?: string;
+            item_id?: string;
+            item_title?: string;
         };
         ChatBuyerNote: {
             account_id: string;
@@ -3175,6 +3681,21 @@ export interface components {
             page_size: number;
             truncated: boolean;
         };
+        SalesStatsResponse: {
+            sales_amount: number;
+            sales_orders: number;
+            received_amount: number;
+            received_orders: number;
+            refunded_amount: number;
+            refunded_orders: number;
+            daily: {
+                date: string;
+                sales_amount: number;
+                received_amount: number;
+                refunded_amount: number;
+                order_count: number;
+            }[];
+        };
         SessionStatusResponse: {
             authenticated: boolean;
             initialized: boolean;
@@ -3211,6 +3732,180 @@ export interface components {
             unb: string;
             account_id?: string;
             is_new_account?: boolean;
+        };
+        RuntimeLogDetail: {
+            key: string;
+            value: string;
+        };
+        RuntimeLogEntry: {
+            /** Format: int64 */
+            seq: number;
+            time: string;
+            /** @enum {string} */
+            level: "debug" | "info" | "warn" | "error";
+            /** @enum {string} */
+            source: "http" | "mtop" | "automation" | "engine" | "notify" | "ws" | "renewal" | "other";
+            message: string;
+            method?: string;
+            path?: string;
+            status?: number;
+            /** Format: int64 */
+            duration_ms?: number;
+            request_id?: string;
+            api?: string;
+            category?: string;
+            ret?: string;
+            error?: string;
+            account_id?: string;
+            item_id?: string;
+            order_id?: string;
+            chat_id?: string;
+            caller?: string;
+            func?: string;
+            route?: string;
+            run_id?: string;
+            details?: components["schemas"]["RuntimeLogDetail"][];
+        };
+        RuntimeLogPageResponse: {
+            entries: components["schemas"]["RuntimeLogEntry"][];
+            /** Format: int64 */
+            next_cursor: number;
+            /** Format: int64 */
+            oldest_seq: number;
+            /** Format: int64 */
+            dropped: number;
+            capacity: number;
+        };
+        LibraryImage: {
+            /** Format: int64 */
+            id: number;
+            filename: string;
+            content_type: string;
+            /** Format: int64 */
+            size_bytes: number;
+            created_at: string;
+        };
+        LibraryImageUploadRequest: {
+            files: string[];
+        };
+        LibraryImageUploadItem: {
+            filename: string;
+            duplicate: boolean;
+            error: string;
+            image?: components["schemas"]["LibraryImage"] | null;
+        };
+        LibraryImageUploadResponse: {
+            results: components["schemas"]["LibraryImageUploadItem"][];
+        };
+        LibraryTemplateBinding: {
+            variable_key: string;
+            /** Format: int64 */
+            card_id: number;
+            delivery_count: number;
+        };
+        LibraryTemplateAction: {
+            /** @enum {string} */
+            action_type: "send_card" | "send_template";
+            /** Format: int64 */
+            card_id: number;
+            delivery_count: number;
+            delay_seconds: number;
+            /** Format: int64 */
+            delivery_template_id: number;
+            template_bindings: components["schemas"]["LibraryTemplateBinding"][];
+            custom_variables: {
+                [key: string]: string;
+            };
+            spec_name: string;
+            spec_value: string;
+        };
+        LibraryTemplateCardAutomation: {
+            enabled: boolean;
+            actions: components["schemas"]["LibraryTemplateAction"][];
+        };
+        LibraryTemplateReviewRequest: {
+            enabled: boolean;
+            after_shipped_hours: number;
+            message: string;
+            max_attempts: number;
+            delay_seconds: number;
+        };
+        LibraryTemplateAutomation: {
+            paid_delivery: components["schemas"]["LibraryTemplateCardAutomation"];
+            review_gift: components["schemas"]["LibraryTemplateCardAutomation"];
+            review_request: components["schemas"]["LibraryTemplateReviewRequest"];
+        };
+        LibraryTemplateSpecValue: {
+            value: string;
+            image_index: number;
+        };
+        LibraryTemplateSpec: {
+            property_name: string;
+            support_image: boolean;
+            values: components["schemas"]["LibraryTemplateSpecValue"][];
+        };
+        LibraryTemplateSKUProperty: {
+            property_text: string;
+            value_text: string;
+        };
+        LibraryTemplateSKU: {
+            /** @description 元，两位小数 */
+            price: string;
+            quantity: number;
+            property_list: components["schemas"]["LibraryTemplateSKUProperty"][];
+        };
+        LibraryTemplateSpecs: {
+            specs: components["schemas"]["LibraryTemplateSpec"][];
+            skus: components["schemas"]["LibraryTemplateSKU"][];
+            spec_image_ids: number[];
+        };
+        LibraryTemplateRequest: {
+            name: string;
+            title: string;
+            description: string;
+            price: string;
+            original_price?: string;
+            quantity: number;
+            postage_mode: string;
+            postage?: string;
+            category: components["schemas"]["PublishCategoryResponse"];
+            image_ids: number[];
+            specs: components["schemas"]["LibraryTemplateSpecs"];
+            automation: components["schemas"]["LibraryTemplateAutomation"];
+        };
+        LibraryTemplate: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+            title: string;
+            description: string;
+            price: string;
+            original_price: string;
+            quantity: number;
+            postage_mode: string;
+            postage: string;
+            category: components["schemas"]["PublishCategoryResponse"];
+            image_ids: number[];
+            specs: components["schemas"]["LibraryTemplateSpecs"];
+            automation: components["schemas"]["LibraryTemplateAutomation"];
+            created_at: string;
+            updated_at: string;
+        };
+        LibraryTemplateLocation: {
+            area?: string;
+            city?: string;
+            division_id?: string;
+            longitude?: number;
+            latitude?: number;
+            poi_id?: string;
+            poi_name?: string;
+            province?: string;
+        };
+        LibraryTemplatePublishRequest: {
+            template_ids: number[];
+            cookie_ids: string[];
+            location?: components["schemas"]["LibraryTemplateLocation"];
+            publish_interval_seconds?: number;
         };
         ErrorResponse: {
             code: string;
@@ -5403,6 +6098,150 @@ export interface operations {
             };
         };
     };
+    getApiV1AnalyticsSales: {
+        parameters: {
+            query: {
+                start_date: string;
+                end_date: string;
+                timezone_offset_minutes?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SalesStatsResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1AutomationAuditEvents: {
+        parameters: {
+            query?: {
+                cookie_id?: string;
+                status?: "queued" | "running" | "success" | "failed" | "skipped" | "needs_review" | "canceled";
+                trigger_type?: string;
+                /** @description 大于零时返回该运行的时间线（按时间正序）。 */
+                run_id?: number;
+                /** @description 订单号子串匹配。 */
+                search?: string;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationAuditEventListResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getApiV1AutomationIssues: {
         parameters: {
             query?: never;
@@ -6368,6 +7207,33 @@ export interface operations {
                 };
             };
             /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6506,6 +7372,15 @@ export interface operations {
                 };
             };
             /** @description 统一错误响应 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6605,6 +7480,220 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CardAppendResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1CardsBycard_idApiEditor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CardAPIEditorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1CardsBycard_idSaleRecords: {
+        parameters: {
+            query?: {
+                status?: "reserved" | "sold";
+                /** @description 订单号精确匹配或卡密内容子串匹配。 */
+                search?: string;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CardSaleRecordListResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1CardsBycard_idExport: {
+        parameters: {
+            query: {
+                scope: "unsold" | "sold";
+            };
+            header?: never;
+            path: {
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 导出文件 */
+            200: {
+                headers: {
+                    /** @description attachment，包含按 RFC 2231 编码的文件名。 */
+                    "Content-Disposition"?: string;
+                    /** @description 固定为 no-store。 */
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                    "text/csv": string;
                 };
             };
             /** @description 统一错误响应 */
@@ -6989,6 +8078,84 @@ export interface operations {
                     /** Format: binary */
                     image: string;
                 };
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageEnvelope"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 消息已发送但本地状态收口失败，或其他统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatSendErrorResponse"];
+                };
+            };
+            /** @description 平台发送失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatSendErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1ChatLibraryImages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatLibraryImageSendRequest"];
             };
         };
         responses: {
@@ -8549,6 +9716,146 @@ export interface operations {
             };
         };
     };
+    getApiV1ItemsBycookie_idByitem_idAiSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemAISettingsResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1ItemsBycookie_idByitem_idAiSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemAISettingsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemAISettingsResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     putApiV1ItemsBycookie_idByitem_idMultiQuantityDelivery: {
         parameters: {
             query?: never;
@@ -8924,6 +10231,577 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1LibraryImages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryImage"][];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1LibraryImages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["LibraryImageUploadRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryImageUploadResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1LibraryImagesByimage_idContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                image_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 图片字节 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                    "image/jpeg": string;
+                    "image/gif": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteApiV1LibraryImagesByimage_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                image_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1LibraryProductTemplates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryTemplate"][];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1LibraryProductTemplates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryTemplate"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1LibraryProductTemplatesPublishPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryTemplatePublishRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemPublishBatchPreviewResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1LibraryProductTemplatesBytemplate_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryTemplate"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1LibraryProductTemplatesBytemplate_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryTemplate"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteApiV1LibraryProductTemplatesBytemplate_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9542,6 +11420,70 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1LogsRuntime: {
+        parameters: {
+            query?: {
+                /** @description 排他游标；零值表示读取服务端保留的最近 limit 条记录，大于服务端末尾时按零值处理 */
+                since?: number;
+                /** @description 单次返回条数上限，默认 200 */
+                limit?: number;
+                level?: "debug" | "info" | "warn" | "error";
+                source?: string;
+                keyword?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLogPageResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10595,6 +12537,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1OrdersByorder_idDeliveredCards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderDeliveredCardsResponse"];
                 };
             };
             /** @description 统一错误响应 */
@@ -11993,6 +14002,365 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1ReplyRulesGreetings: {
+        parameters: {
+            query?: {
+                cookie_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemGreetingListResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1ReplyRulesGreetings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemGreetingRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemGreetingResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1ReplyRulesGreetingsByid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemGreetingRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemGreetingResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteApiV1ReplyRulesGreetingsByid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postApiV1ReplyRulesGreetingsClearRecordsBycookie_id: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationResponse"];
                 };
             };
             /** @description 统一错误响应 */

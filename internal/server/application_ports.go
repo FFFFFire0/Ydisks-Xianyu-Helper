@@ -13,8 +13,11 @@ import (
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
+	itemgreetingapp "xianyu-go/internal/application/itemgreeting"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
+	libraryapp "xianyu-go/internal/application/library"
+	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
 	orderapp "xianyu-go/internal/application/orders"
 	settingsapp "xianyu-go/internal/application/settings"
@@ -131,6 +134,12 @@ type ItemCatalogMutationPort interface {
 	SetMultiQuantity(context.Context, string, string, bool) error
 }
 
+// ItemAISettingsPort 定义商品级 AI 配置读取与保存能力。
+type ItemAISettingsPort interface {
+	Get(context.Context, int64, string, string) (itemapp.ItemAISettings, error)
+	Save(context.Context, int64, itemapp.ItemAISettings) error
+}
+
 // PlatformCredentialPort 定义平台凭证受控读取能力。
 type PlatformCredentialPort interface {
 	LoadPlatformDetail(context.Context, string) (*accountapp.CredentialDetail, error)
@@ -227,6 +236,7 @@ type ChatPort interface {
 	RefreshHistory(context.Context, string, string, int64, int, chatapp.Session) (chatapp.HistoryPage, error)
 	SendText(context.Context, chatapp.OutgoingInput) (*chatapp.Message, error)
 	SendImage(context.Context, chatapp.ImageInput) (*chatapp.Message, error)
+	SendLibraryImage(context.Context, chatapp.LibraryImageInput) (*chatapp.Message, error)
 	ListStoredMessages(context.Context, int64, string, string, int64, int) (chatapp.Page, error)
 	ListSessions(context.Context, int64, string, int) ([]chatapp.Session, error)
 	ListSessionPage(context.Context, int64, string, *chatapp.SessionCursor, int) (chatapp.SessionPage, error)
@@ -241,6 +251,7 @@ type ChatPort interface {
 	RefreshSessionIdentities(context.Context, string, []chatapp.Session) ([]chatapp.Session, error)
 	ListQuickReplies(context.Context, int64, string) ([]chatapp.QuickReply, error)
 	CreateQuickReply(context.Context, int64, string, string) (chatapp.QuickReply, error)
+	CreateQuickReplyWithImage(context.Context, int64, string, string, int64) (chatapp.QuickReply, error)
 	DeleteQuickReply(context.Context, int64, string, int64) error
 	GetBuyerNote(context.Context, int64, string, string) (chatapp.BuyerNote, error)
 	SaveBuyerNote(context.Context, int64, string, string, string) (chatapp.BuyerNote, error)
@@ -273,6 +284,8 @@ type AnalyticsPort interface {
 	DashboardStats(context.Context, int64) (analyticsapp.DashboardStats, error)
 	OrderAnalytics(context.Context, analyticsapp.Query) (analyticsapp.OrderAnalytics, error)
 	ValidOrders(context.Context, analyticsapp.Query, int, int) (analyticsapp.ValidOrders, error)
+	// SalesStats 返回指定时间范围内的销售额、已收货款与退货货款统计。
+	SalesStats(context.Context, analyticsapp.Query) (analyticsapp.SalesStats, error)
 }
 
 // AutomationIssuesPort 定义自动化异常的查询和人工处理能力。
@@ -280,6 +293,11 @@ type AutomationIssuesPort interface {
 	ListIssues(context.Context, int64) ([]automationapp.RunIssue, []automationapp.DeferredIssue, error)
 	ResolveRunIssue(context.Context, int64, int64, string) error
 	ResolveDeferredIssue(context.Context, int64, int64, string) error
+}
+
+// AutomationAuditPort 定义规则日志（自动化行为审计）的分页查询能力。
+type AutomationAuditPort interface {
+	ListEvents(context.Context, int64, automationapp.AuditListInput) (automationapp.AuditPage, error)
 }
 
 // AutomationRulesPort 定义自动化规则的查询、规范化和写入能力。
@@ -310,6 +328,10 @@ type PublishAutomationRulesPort interface {
 
 // CardsPort 定义卡券库存 CRUD 与归属校验能力。
 type CardsPort interface {
+	// GetAPIEditor 读取所属用户主动打开的完整编辑模板。
+	GetAPIEditor(context.Context, int64, int64) (cardsapp.APIEditor, error)
+	// PrepareAPITest 合并所属卡密的已保存配置与临时测试草稿。
+	PrepareAPITest(context.Context, int64, int64, string) (string, error)
 	List(context.Context, int64) ([]cardsapp.Card, error)
 	Get(context.Context, int64, int64) (cardsapp.Card, error)
 	ExistsOwned(context.Context, int64, int64) (bool, error)
@@ -317,6 +339,14 @@ type CardsPort interface {
 	Update(context.Context, int64, int64, cardsapp.Draft) error
 	Delete(context.Context, int64, int64) error
 	AppendData(context.Context, int64, int64, string) (int, error)
+	// ListSaleRecords 分页读取所属卡密组的售出记录。
+	ListSaleRecords(context.Context, int64, int64, cardsapp.SaleListInput) (cardsapp.SalePage, error)
+	// ExportUnsold 导出 data 卡密组当前未售库存。
+	ExportUnsold(context.Context, int64, int64) (cardsapp.Export, error)
+	// ExportSold 导出卡密组的售出记录 CSV。
+	ExportSold(context.Context, int64, int64) (cardsapp.Export, error)
+	// SaleRecordsByOrder 读取某账号某订单已发出的卡密；调用方必须先确认订单归属。
+	SaleRecordsByOrder(context.Context, int64, string, string) ([]cardsapp.SaleRecord, error)
 }
 
 // APIRequestTesterPort 定义卡券 API 测试请求所需的最小应用能力。
@@ -331,6 +361,29 @@ type DefaultRepliesPort interface {
 	List(context.Context, int64) ([]defaultreplyapp.Summary, error)
 	Delete(context.Context, int64, string) error
 	ClearRecords(context.Context, int64, string) error
+}
+
+// ItemGreetingsPort 定义商品首次回复规则能力。
+type ItemGreetingsPort interface {
+	List(context.Context, int64, string) ([]itemgreetingapp.Rule, error)
+	Create(context.Context, int64, itemgreetingapp.Draft) (itemgreetingapp.Rule, error)
+	Update(context.Context, int64, int64, itemgreetingapp.Draft) (itemgreetingapp.Rule, error)
+	Delete(context.Context, int64, int64) error
+	ClearRecords(context.Context, int64, string) error
+}
+
+// LibraryPort 定义本地资源库能力：图片库、商品模板，以及「模板 × 账号」发布预检。
+type LibraryPort interface {
+	ListImages(context.Context, int64) ([]libraryapp.Image, error)
+	UploadImages(context.Context, int64, []libraryapp.ImageUpload) ([]libraryapp.UploadResult, error)
+	ImageContent(context.Context, int64, int64) (libraryapp.Image, []byte, error)
+	DeleteImage(context.Context, int64, int64) error
+	ListTemplates(context.Context, int64) ([]libraryapp.Template, error)
+	GetTemplate(context.Context, int64, int64) (libraryapp.Template, error)
+	CreateTemplate(context.Context, libraryapp.Template) (libraryapp.Template, error)
+	UpdateTemplate(context.Context, libraryapp.Template) (libraryapp.Template, error)
+	DeleteTemplate(context.Context, int64, int64) error
+	PreviewPublish(context.Context, libraryapp.PublishPreviewInput) (itemapp.BatchPreviewPersistenceResult, error)
 }
 
 // KeywordsPort 定义关键词与指定商品回复能力。
@@ -371,6 +424,12 @@ type AdminPort interface {
 	Stats(context.Context) (adminapp.Stats, error)
 }
 
+// RuntimeLogsPort 定义管理员运行日志查询用例；它只读取进程内已脱敏日志，不接触数据库。
+type RuntimeLogsPort interface {
+	// Query 按条件读取运行日志；无效等级过滤返回 logsapp.ErrInvalidLevel。
+	Query(logsapp.Query) (logsapp.Page, error)
+}
+
 // ApplicationPorts 是构造期注入 HTTP transport 的不可变应用 Port 集合。
 // 它不包含 adapter、数据库、平台 client、账号 Manager 或 worker 生命周期拥有权。
 type ApplicationPorts struct {
@@ -396,6 +455,8 @@ type ApplicationPorts struct {
 	itemCatalog ItemCatalogPort
 	// itemCatalogMutation 是商品目录写入用例。
 	itemCatalogMutation ItemCatalogMutationPort
+	// itemAISettings 是商品级 AI 配置用例。
+	itemAISettings ItemAISettingsPort
 	// accountLogin 是 Cookie 与二维码登录用例 Port。
 	accountLogin AccountLoginPort
 	// qrLogin 是二维码平台流程用例 Port。
@@ -434,6 +495,8 @@ type ApplicationPorts struct {
 	analytics AnalyticsPort
 	// automationIssues 是自动化异常用例。
 	automationIssues AutomationIssuesPort
+	// automationAudit 是规则日志查询用例。
+	automationAudit AutomationAuditPort
 	// automationRules 是自动化规则用例。
 	automationRules AutomationRulesPort
 	// deliveryTemplates 是发货模板管理用例。
@@ -446,12 +509,18 @@ type ApplicationPorts struct {
 	publishAutomationRules PublishAutomationRulesPort
 	// defaultReplies 是默认回复用例。
 	defaultReplies DefaultRepliesPort
+	// itemGreetings 是商品首次回复规则用例。
+	itemGreetings ItemGreetingsPort
+	// library 是本地资源库用例。
+	library LibraryPort
 	// keywords 是关键词回复用例。
 	keywords KeywordsPort
 	// settings 是系统设置用例。
 	settings SettingsPort
 	// admin 是管理员用户与统计用例。
 	admin AdminPort
+	// runtimeLogs 是管理员运行日志查询用例。
+	runtimeLogs RuntimeLogsPort
 }
 
 // ApplicationPortsInput 是组合根向 HTTP transport 交付的完整应用 Port 快照。
@@ -468,6 +537,7 @@ type ApplicationPortsInput struct {
 	ItemSync                    ItemSyncPort
 	ItemCatalog                 ItemCatalogPort
 	ItemCatalogMutation         ItemCatalogMutationPort
+	ItemAISettings              ItemAISettingsPort
 	AccountLogin                AccountLoginPort
 	QRLogin                     QRLoginPort
 	SessionRecovery             SessionRecoveryPort
@@ -487,15 +557,20 @@ type ApplicationPortsInput struct {
 	NotificationChannels        NotificationChannelsPort
 	Analytics                   AnalyticsPort
 	AutomationIssues            AutomationIssuesPort
+	AutomationAudit             AutomationAuditPort
 	AutomationRules             AutomationRulesPort
 	DeliveryTemplates           DeliveryTemplatesPort
 	Cards                       CardsPort
-	APIRequestTester            APIRequestTesterPort
-	PublishAutomationRules      PublishAutomationRulesPort
-	DefaultReplies              DefaultRepliesPort
-	Keywords                    KeywordsPort
-	Settings                    SettingsPort
-	Admin                       AdminPort
+	// RuntimeLogs 是管理员运行日志查询用例。
+	RuntimeLogs            RuntimeLogsPort
+	APIRequestTester       APIRequestTesterPort
+	PublishAutomationRules PublishAutomationRulesPort
+	DefaultReplies         DefaultRepliesPort
+	ItemGreetings          ItemGreetingsPort
+	Library                LibraryPort
+	Keywords               KeywordsPort
+	Settings               SettingsPort
+	Admin                  AdminPort
 }
 
 // NewApplicationPorts 将组合根已经验证的用例依赖冻结为 Server 私有快照。
@@ -505,16 +580,16 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		itemSinglePublish: input.ItemSinglePublish, itemBatchPreview: input.ItemBatchPreview,
 		itemBatchManagement: input.ItemBatchManagement, itemCategoryRecommendation: input.ItemCategoryRecommendation,
 		itemBatchPreviewPersistence: input.ItemBatchPreviewPersistence, itemBatchLocalPublish: input.ItemBatchLocalPublish,
-		itemSync: input.ItemSync, itemCatalog: input.ItemCatalog, itemCatalogMutation: input.ItemCatalogMutation,
+		itemSync: input.ItemSync, itemCatalog: input.ItemCatalog, itemCatalogMutation: input.ItemCatalogMutation, itemAISettings: input.ItemAISettings,
 		accountLogin: input.AccountLogin, qrLogin: input.QRLogin, sessionRecovery: input.SessionRecovery,
 		platformCredentials: input.PlatformCredentials, authentication: input.Authentication, loginAudit: input.LoginAudit,
 		passwordLogin: input.PasswordLogin, accountDelete: input.AccountDelete, accountProfile: input.AccountProfile,
 		accountLongLogin: input.AccountLongLogin, accountSettings: input.AccountSettings, accountRuntime: input.AccountRuntime,
 		accountSummaries: input.AccountSummaries, accountTasks: input.AccountTasks, chat: input.Chat,
 		uncertainNotifications: input.UncertainNotifications, notificationChannels: input.NotificationChannels,
-		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationRules: input.AutomationRules,
-		cards: input.Cards, deliveryTemplates: input.DeliveryTemplates, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
-		keywords: input.Keywords, settings: input.Settings, admin: input.Admin,
+		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationAudit: input.AutomationAudit, automationRules: input.AutomationRules,
+		cards: input.Cards, deliveryTemplates: input.DeliveryTemplates, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies, itemGreetings: input.ItemGreetings, library: input.Library,
+		keywords: input.Keywords, settings: input.Settings, admin: input.Admin, runtimeLogs: input.RuntimeLogs,
 	}
 }
 
@@ -534,15 +609,16 @@ func (ports *ApplicationPorts) validate() error {
 		{"orders", ports.orders}, {"order_refresh_jobs", ports.orderRefreshJobs}, {"item_single_publish", ports.itemSinglePublish},
 		{"item_batch_preview", ports.itemBatchPreview}, {"item_batch_management", ports.itemBatchManagement}, {"item_category_recommendation", ports.itemCategoryRecommendation},
 		{"item_batch_preview_persistence", ports.itemBatchPreviewPersistence}, {"item_batch_local_publish", ports.itemBatchLocalPublish}, {"item_sync", ports.itemSync},
-		{"item_catalog", ports.itemCatalog}, {"item_catalog_mutation", ports.itemCatalogMutation}, {"account_login", ports.accountLogin},
+		{"item_catalog", ports.itemCatalog}, {"item_catalog_mutation", ports.itemCatalogMutation}, {"item_ai_settings", ports.itemAISettings}, {"account_login", ports.accountLogin},
 		{"qr_login", ports.qrLogin}, {"session_recovery", ports.sessionRecovery}, {"platform_credentials", ports.platformCredentials},
 		{"authentication", ports.authentication}, {"login_audit", ports.loginAudit}, {"password_login", ports.passwordLogin},
 		{"account_delete", ports.accountDelete}, {"account_profile", ports.accountProfile}, {"account_long_login", ports.accountLongLogin},
 		{"account_settings", ports.accountSettings}, {"account_runtime", ports.accountRuntime}, {"account_summaries", ports.accountSummaries},
 		{"account_tasks", ports.accountTasks}, {"chat", ports.chat}, {"uncertain_notifications", ports.uncertainNotifications},
-		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues},
+		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues}, {"automation_audit", ports.automationAudit},
 		{"automation_rules", ports.automationRules}, {"cards", ports.cards}, {"publish_automation_rules", ports.publishAutomationRules},
-		{"default_replies", ports.defaultReplies}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
+		{"default_replies", ports.defaultReplies}, {"item_greetings", ports.itemGreetings}, {"library", ports.library}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
+		{"runtime_logs", ports.runtimeLogs},
 	}
 	// requiredPort 是当前必须在 Server 构造前绑定的应用 Port 名称。
 	for _, requiredPort := range required {
@@ -591,9 +667,19 @@ func (server *Server) itemCatalogMutationApplication() ItemCatalogMutationPort {
 	return server.applicationServiceSet().itemCatalogMutation
 }
 
+// itemAISettingsApplication 返回商品级 AI 配置用例。
+func (server *Server) itemAISettingsApplication() ItemAISettingsPort {
+	return server.applicationServiceSet().itemAISettings
+}
+
 // itemSyncApplication 返回商品同步用例。
 func (server *Server) itemSyncApplication() ItemSyncPort {
 	return server.applicationServiceSet().itemSync
+}
+
+// libraryApplication 返回本地资源库用例。
+func (server *Server) libraryApplication() LibraryPort {
+	return server.applicationServiceSet().library
 }
 
 // cardsApplication 返回卡券库存用例。
@@ -609,6 +695,11 @@ func (server *Server) accountTaskApplication() AccountTasksPort {
 // automationIssuesApplication 返回自动化异常用例。
 func (server *Server) automationIssuesApplication() AutomationIssuesPort {
 	return server.applicationServiceSet().automationIssues
+}
+
+// automationAuditApplication 返回规则日志查询用例。
+func (server *Server) automationAuditApplication() AutomationAuditPort {
+	return server.applicationServiceSet().automationAudit
 }
 
 // automationRulesApplication 返回自动化规则用例。

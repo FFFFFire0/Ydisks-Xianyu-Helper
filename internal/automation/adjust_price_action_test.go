@@ -19,7 +19,7 @@ func TestAIBargainQuoteAutomaticallyAdjustsCreatedOrder(t *testing.T) {
 	// ctx 是 AI 报价和订单事件共用的测试上下文。
 	ctx := context.Background()
 	// err 是保存 AI 议价与真实改价开关时不应出现的错误。
-	if err := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, AutoAdjustPriceEnabled: true, MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3}); err != nil {
+	if err := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, AutoAdjustPriceEnabled: true, MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3, AIMode: "bargain_only"}); err != nil {
 		t.Fatal(err)
 	}
 	// quote 是已经成功发送给指定买家和会话的 9.90 元报价。
@@ -63,7 +63,7 @@ func TestAIBargainQuoteRetriesTransientBusy(t *testing.T) {
 	// ctx 是 AI 报价和订单事件共用的测试上下文。
 	ctx := context.Background()
 	// err 是保存 AI 议价与真实改价开关时不应出现的错误。
-	if err := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, AutoAdjustPriceEnabled: true, MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3}); err != nil {
+	if err := store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, AutoAdjustPriceEnabled: true, MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3, AIMode: "bargain_only"}); err != nil {
 		t.Fatal(err)
 	}
 	// quote 是已发送、尚待买家拍下后消费的 AI 单件报价。
@@ -112,7 +112,7 @@ func TestAINegotiationSuppressesLegacyFixedPriceRule(t *testing.T) {
 	if _, err = store.Automation.Create(ctx, db.AutomationRuleInput{UserID: owner.ID, CookieID: "cid", Name: "遗留改价", TriggerType: TriggerOrderCreated, Enabled: true, Actions: []db.AutomationActionInput{{ActionType: ActionAdjustPrice, ConfigJSON: `{"target_price":"8.80"}`, Enabled: true}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, AutoAdjustPriceEnabled: false, MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3}); err != nil {
+	if err = store.AIReply.UpsertSettings(ctx, "cid", db.AIReplySettings{AIEnabled: true, AutoAdjustPriceEnabled: false, MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3, AIMode: "bargain_only"}); err != nil {
 		t.Fatal(err)
 	}
 	// fake 统计是否有任何固定规则改价请求触达平台。
@@ -404,7 +404,8 @@ func TestAdjustOrderPriceRecoversExpiredSessionOnce(t *testing.T) {
 	}
 }
 
-// TestAdjustOrderPriceDoesNotOverwriteConcurrentCookie 验证改价旧响应返回的 Cookie 不会覆盖外部调用期间并发写入的新凭证。
+// TestAdjustOrderPriceDoesNotOverwriteConcurrentCookie 验证改价旧响应返回的 Cookie 不会覆盖外部调用期间并发写入的新凭证，
+// 且平台已明确改价成功时该写回冲突不改变动作结果（成功、不进入人工核对）。
 func TestAdjustOrderPriceDoesNotOverwriteConcurrentCookie(t *testing.T) {
 	// store、cleanup 保存测试数据库及其清理函数。
 	store, cleanup := newAutomationTestStore(t)
@@ -455,8 +456,8 @@ func TestAdjustOrderPriceDoesNotOverwriteConcurrentCookie(t *testing.T) {
 	close(release)
 	// outcome 保存异步改价完成后的外部结果和错误。
 	outcome := <-result
-	if outcome.sent != 0 || outcome.err == nil || !strings.Contains(outcome.err.Error(), "并发更新冲突") {
-		t.Fatalf("sent=%d err=%v", outcome.sent, outcome.err)
+	if outcome.sent != 1 || outcome.err != nil {
+		t.Fatalf("改价成功后凭证并发冲突不应影响动作结果: sent=%d err=%v", outcome.sent, outcome.err)
 	}
 	// detail、detailErr 分别保存最终凭证运行视图和读取错误。
 	detail, detailErr := store.Cookies.GetDetails(ctx, "cid")

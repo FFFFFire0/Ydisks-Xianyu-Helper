@@ -20,6 +20,8 @@ export interface Card {
   // 图片类型
   /** 图片卡券地址。 */
   image_url?: string;
+  /** 图片卡券使用的图片库图片主键；0 或缺省表示未使用，与 image_url 互斥。 */
+  library_image_id?: number;
   // 通用配置
   /** 卡券发送延迟秒数。 */
   delay_seconds?: number;
@@ -30,6 +32,8 @@ export interface Card {
   spec_name?: string;
   /** 规格值。 */
   spec_value?: string;
+  /** 已确认售出的卡密数量，来自服务端售出台账。 */
+  sold_count?: number;
 }
 
 /** API 卡券查询返回的脱敏摘要；请求头和参数永远不在此模型中。 */
@@ -54,6 +58,16 @@ export interface CardAPIConfigSummary {
   ready: boolean;
   /** 当前配置的非敏感校验错误。 */
   validation_error?: string;
+}
+
+/** 仅在拥有者打开编辑弹窗时载入的完整配置，不进入列表缓存。 */
+export interface CardAPIEditor extends Pick<CardAPIConfigSummary, 'url' | 'method' | 'content_type' | 'timeout_seconds' | 'response_path' | 'retry_enabled'> {
+  /** 完整请求头模板，仅保留在当前编辑草稿。 */
+  headers: string;
+  /** 完整查询参数模板。 */
+  params: string;
+  /** 完整请求正文模板。 */
+  body: string;
 }
 
 /** API 卡券提交用的具名配置；敏感模板为空时由服务端保留旧值。 */
@@ -102,6 +116,8 @@ export interface CardAPITestResult {
 export type CardMutation = Omit<Partial<Card>, 'api_config'> & {
   /** API 卡券具名请求配置或历史 JSON 字符串。 */
   api_config?: CardAPIConfigInput | string;
+  /** 编辑 data 卡库存时打开弹窗所见的库存快照；服务端仅在库存未被自动发货改动时覆盖。 */
+  expected_data_content?: string;
 };
 
 /** 卡券批量创建接口的逐行结果。 */
@@ -163,4 +179,62 @@ export interface OperationResponse {
   message?: string;
   /** 操作完成后是否需要重新登录。 */
   requires_relogin?: boolean;
+}
+
+/** 售出记录状态：sold 为已确认发给买家，reserved 为已扣库存但发送结果待人工核对。 */
+export type CardSaleStatus = 'sold' | 'reserved';
+
+/** 由 adapter 归一后的卡密售出记录 UI 模型；content 为已发出的卡密明文，只在拥有者主动打开的弹窗内持有。 */
+export interface CardSaleRecord {
+  /** 售出记录主键。 */
+  id: number;
+  /** 已发出的卡密正文或 API 返回内容。 */
+  content: string;
+  /** 记录状态。 */
+  status: CardSaleStatus;
+  /** 售出时的卡密组名称快照。 */
+  cardName: string;
+  /** 订单所属闲鱼账号标识。 */
+  cookieId: string;
+  /** 平台订单号。 */
+  orderId: string;
+  /** 订单商品标识。 */
+  itemId: string;
+  /** 买家标识。 */
+  buyerId: string;
+  /** 确认售出的 Unix 毫秒时间；待核对记录回退为扣库存时间。 */
+  soldAtMs: number;
+}
+
+/** 售出记录分页查询条件。 */
+export interface CardSaleQuery {
+  /** 状态筛选，空表示全部。 */
+  status: CardSaleStatus | '';
+  /** 订单号或卡密内容搜索词。 */
+  search: string;
+  /** 从 1 开始的页码。 */
+  page: number;
+  /** 每页数量。 */
+  pageSize: number;
+}
+
+/** 一页售出记录及分页信息。 */
+export interface CardSalePage {
+  /** 当前页记录。 */
+  records: CardSaleRecord[];
+  /** 符合条件的总数。 */
+  total: number;
+  /** 总页数，至少为 1。 */
+  totalPages: number;
+}
+
+/** 导出范围：unsold 为当前库存 TXT，sold 为售出记录 CSV。 */
+export type CardExportScope = 'unsold' | 'sold';
+
+/** 导出接口返回的可下载文件。 */
+export interface CardExportFile {
+  /** 文件内容。 */
+  blob: Blob;
+  /** 服务端建议的文件名。 */
+  filename: string;
 }

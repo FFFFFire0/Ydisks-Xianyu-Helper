@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act,renderHook } from '@testing-library/react';
 import { afterEach,beforeEach,describe,expect,test,vi } from 'vitest';
-import { BROWSER_NOTIFICATION_PREFERENCE_KEY,getBrowserNotificationPermission,readBrowserNotificationEnabled,showBrowserNotification,updateBrowserNotificationPreference,useBrowserNotificationPreference } from './browserNotifications';
+import { BROWSER_NOTIFICATION_PREFERENCE_KEY,getBrowserNotificationHint,getBrowserNotificationPermission,readBrowserNotificationEnabled,showBrowserNotification,updateBrowserNotificationPreference,useBrowserNotificationPreference } from './browserNotifications';
 
 /** FakeNotification 模拟浏览器通知构造器及用户可见的通知实例。 */
 class FakeNotification {
@@ -127,5 +127,41 @@ describe('browser notification preference', /* 当前测试组验证浏览器通
     await updateBrowserNotificationPreference(true);
     expect(readBrowserNotificationEnabled()).toBe(true);
     expect(showBrowserNotification({ title: '存储受限消息', body: '仍应展示' })).toBe(true);
+  });
+});
+
+describe('getBrowserNotificationHint', /* 覆盖通知无法开启时的各类处理建议。 */ () => {
+  test('可用状态不给提示', /* granted 与 default 均返回空串。 */ () => {
+    expect(getBrowserNotificationHint('granted', true)).toBe('');
+    expect(getBrowserNotificationHint('default', false)).toBe('');
+  });
+  test('非安全上下文优先提示 HTTPS', /* Docker 经 HTTP 访问时权限会被直接拒绝。 */ () => {
+    expect(getBrowserNotificationHint('denied', false)).toContain('HTTPS');
+    expect(getBrowserNotificationHint('unsupported', false)).toContain('HTTPS');
+  });
+  test('安全上下文被拒绝时提示站点设置', /* 引导用户到浏览器站点设置重新允许。 */ () => {
+    expect(getBrowserNotificationHint('denied', true)).toContain('站点设置');
+  });
+  test('安全上下文不支持时提示不支持', /* 旧浏览器没有 Notification API。 */ () => {
+    expect(getBrowserNotificationHint('unsupported', true)).toContain('不支持');
+  });
+});
+
+describe('showBrowserNotification 提示音', /* 当前测试组验证通知弹出时联动播放提示音。 */ () => {
+  test('通知创建成功后调用提示音入口', /* 当前回调验证联动。 */ async () => {
+    vi.resetModules();
+    // playMock 记录提示音入口调用次数。
+    const playMock = vi.fn(() => true);
+    vi.doMock('./notificationSound', /* 当前回调替换提示音模块。 */ () => ({ playNotificationSoundIfEnabled: playMock }));
+    vi.stubGlobal('Notification', FakeNotification);
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: testLocalStorage });
+    FakeNotification.permission = 'granted';
+    testLocalStorage.setItem(BROWSER_NOTIFICATION_PREFERENCE_KEY, 'true');
+    // fresh 是重新加载并带有提示音替身的通知模块。
+    const fresh = await import('./browserNotifications');
+    expect(fresh.showBrowserNotification({ title: 't', body: 'b' })).toBe(true);
+    expect(playMock).toHaveBeenCalledTimes(1);
+    vi.doUnmock('./notificationSound');
+    vi.unstubAllGlobals();
   });
 });

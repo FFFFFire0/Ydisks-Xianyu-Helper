@@ -155,7 +155,8 @@ func TestAccountTaskRateIsOrderIdempotent(t *testing.T) {
 	}
 	// second、err 用于本次流程后续判断的second、err
 	second, err := center.RunAccountTask(ctx, "cid", TaskAutoRate)
-	if err != nil || second.Skipped != 2 || client.rateCalls != 2 {
+	// 已办完的订单不再是候选（issue #96），二次扫描既不发请求也不计入候选。
+	if err != nil || second.Found != 0 || second.Skipped != 0 || client.rateCalls != 2 {
 		t.Fatalf("second=%+v calls=%d err=%v", second, client.rateCalls, err)
 	}
 }
@@ -200,8 +201,70 @@ func TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests(t *testing.T
 	}
 	// secondSummary、secondErr 保存后续扫描跳过永久失败订单的结果。
 	secondSummary, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
-	if secondErr != nil || secondSummary.Skipped != 1 || client.rateCalls != 1 {
+	// 永久失败订单不再是候选，后续扫描不再请求评价。
+	if secondErr != nil || secondSummary.Found != 0 || secondSummary.Skipped != 0 || client.rateCalls != 1 {
 		t.Fatalf("超期订单后续不应再次请求评价: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
+	}
+}
+
+// TestAccountTaskRateAlreadyRatedCountsAsSuccessAndNotRateableStopsRetry 验证平台回答“已评价”时按成功收口且不再请求，
+// 回答“当前订单不能评价”时与超期同等视为永久失败。
+func TestAccountTaskRateAlreadyRatedCountsAsSuccessAndNotRateableStopsRetry(t *testing.T) {
+	// cases 保存两种平台业务拒绝及其对运行记录与统计的期望。
+	cases := []struct {
+		name        string
+		ret         string
+		wantStatus  string
+		wantSuccess int
+		wantFailed  int
+	}{
+		{name: "already-rated", ret: "FAIL_BIZ_BAD_REQUEST::亲，您已经评价过了||rate failed", wantStatus: "success", wantSuccess: 1},
+		{name: "not-rateable", ret: "FAIL_BIZ_BAD_REQUEST::当前订单不能评价||rate failed", wantStatus: "failed", wantFailed: 1},
+	}
+	// testCase 是当前子测试使用的平台拒绝样本。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// store、cleanup 保存本子测试使用的 SQLite 自动化存储及关闭责任。
+			store, cleanup := newAutomationTestStore(t)
+			defer cleanup()
+			// ctx 是本子测试共用的数据库上下文。
+			ctx := context.Background()
+			// rejectErr 保存平台返回的业务拒绝错误。
+			rejectErr := &mtop.MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: mtop.MTopErrorBusiness, Ret: []string{testCase.ret}}
+			// client 模拟评价接口持续返回同一业务拒绝，并统计评价请求次数。
+			client := &fakeAccountTaskClient{rateErr: rejectErr}
+			// center 是注入平台错误替身后的自动化中心。
+			center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
+			// settingsErr 保存自动评价设置写入错误。
+			if settingsErr := store.AccountTasks.Upsert(ctx, db.AccountTaskSettings{CookieID: "cid", AutoRateEnabled: true, RateContent: "交易愉快", PolishTime: "03:00"}); settingsErr != nil {
+				t.Fatal(settingsErr)
+			}
+			seedLocalCompletedOrders(t, store, ctx, "order-x")
+			// firstSummary、firstErr 保存首次执行结果。
+			firstSummary, firstErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+			if firstErr != nil || firstSummary.Success != testCase.wantSuccess || firstSummary.Failed != testCase.wantFailed || client.rateCalls != 1 {
+				t.Fatalf("首次结果错误: summary=%+v calls=%d err=%v", firstSummary, client.rateCalls, firstErr)
+			}
+			// status、message 保存运行记录状态与原因，nextRetryAt 保存下一次自动执行时间。
+			var status, message string
+			// nextRetryAt 保存运行记录的下一次自动执行时间，终态必须为零。
+			var nextRetryAt int64
+			// queryErr 保存读取运行记录的数据库错误。
+			if queryErr := store.DB.QueryRowContext(ctx, `SELECT status,error_message,next_retry_at FROM account_task_runs WHERE run_key=?`, "rate:cid:order-x").Scan(&status, &message, &nextRetryAt); queryErr != nil {
+				t.Fatal(queryErr)
+			}
+			if status != testCase.wantStatus || nextRetryAt != 0 {
+				t.Fatalf("运行记录错误: status=%q message=%q next_retry_at=%d", status, message, nextRetryAt)
+			}
+			if testCase.wantFailed == 1 && !strings.HasPrefix(message, db.NoRetryErrorPrefix) {
+				t.Fatalf("不能评价应带永久失败前缀: %q", message)
+			}
+			// secondSummary、secondErr 保存后续扫描结果；终态订单不应再次请求平台。
+			secondSummary, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+			if secondErr != nil || client.rateCalls != 1 {
+				t.Fatalf("终态后不应再次请求评价: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
+			}
+		})
 	}
 }
 
@@ -366,7 +429,8 @@ func TestAccountTaskRateCancellationQuarantinesAndBlocksRetry(t *testing.T) {
 	}
 	// retrySummary、retryErr 保存新请求尝试重跑时的结果，确认人工核对状态不会被自动重放。
 	retrySummary, retryErr := center.RunAccountTask(context.Background(), "cid", TaskAutoRate)
-	if retryErr != nil || retrySummary.Skipped != 1 || client.rateCalls != 1 {
+	// 人工核对订单不再是候选，不会被自动重放。
+	if retryErr != nil || retrySummary.Found != 0 || retrySummary.Skipped != 0 || client.rateCalls != 1 {
 		t.Fatalf("人工核对任务不应自动重试: summary=%+v calls=%d err=%v", retrySummary, client.rateCalls, retryErr)
 	}
 }
@@ -630,6 +694,32 @@ func TestManualPolishReportsItemFailures(t *testing.T) {
 	summary, err := center.RunAccountTask(ctx, "cid", TaskAutoPolish)
 	if err == nil || summary.Failed != 1 || summary.Success != 0 {
 		t.Fatalf("summary=%+v err=%v", summary, err)
+	}
+}
+
+// TestPolishStopsRemainingItemsOnRiskVerification 验证擦亮遇到风控后立即停止，不再请求剩余商品。
+func TestPolishStopsRemainingItemsOnRiskVerification(t *testing.T) {
+	// store、cleanup 保存测试使用的 SQLite 存储及其释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// riskErr 模拟平台在擦亮第一件商品时要求安全验证。
+	riskErr := &mtop.RiskVerificationError{API: "擦亮接口", Ret: []string{"FAIL_SYS_USER_VALIDATE::RGV587_ERROR"}}
+	// client 返回风控错误并统计擦亮调用次数。
+	client := &fakeAccountTaskClient{items: []mtop.ItemListItem{{ID: "item-1"}, {ID: "item-2"}, {ID: "item-3"}}, polishErr: riskErr}
+	// center 注入擦亮客户端。
+	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
+	// ctx 是任务共用的上下文。
+	ctx := context.Background()
+	// settingsErr 保存擦亮任务配置写入错误。
+	settingsErr := store.AccountTasks.Upsert(ctx, db.AccountTaskSettings{CookieID: "cid", AutoPolishEnabled: true,
+		RateContent: "交易愉快", PolishTime: "00:00"})
+	if settingsErr != nil {
+		t.Fatal(settingsErr)
+	}
+	// summary、err 保存风控后的任务统计与原始错误。
+	summary, err := center.RunAccountTask(ctx, "cid", TaskAutoPolish)
+	if !mtop.IsRiskVerificationErr(err) || summary.Failed != 1 || client.polishCalls != 1 {
+		t.Fatalf("风控后必须停止剩余商品: summary=%+v calls=%d err=%v", summary, client.polishCalls, err)
 	}
 }
 

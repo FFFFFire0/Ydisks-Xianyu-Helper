@@ -9,7 +9,8 @@ package automation
 import (
 	"encoding/json"
 	"net/url"
-	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"xianyu-go/internal/db"
@@ -130,10 +131,11 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 		Raw:       raw,
 	}
 	switch {
-	case isBargainPendingCard(f):
+	// 砍价两个阶段与普通付款一致，必须带系统消息标记；同标题的非系统卡片不能触发免拼或发卡。
+	case isBargainPendingCard(f) && isSystemEvent(f):
 		task.TriggerType = TriggerBargainPending
 		task.IsBargain = true
-	case isBargainReadyCard(f):
+	case isBargainReadyCard(f) && isSystemEvent(f):
 		task.TriggerType = TriggerOrderPaid
 		task.IsBargain = true
 	case isOrderPaidEvent(f):
@@ -364,8 +366,18 @@ func supplementEventFacts(fields *rawFields, value any, depth int) {
 	switch // typedValue 保存当前原始节点按运行时类型断言后的值。
 	typedValue := value.(type) {
 	case map[string]any:
-		// key、nestedValue 分别是当前对象字段名和待继续解析的字段值。
-		for key, nestedValue := range typedValue {
+		// keys 是按字典序排列的字段名。Go 的 map 遍历顺序随机，而各事实都是“先取到者生效”，
+		// 同一报文含多个候选订单号时结果必须可复现，因此固定遍历顺序。
+		keys := make([]string, 0, len(typedValue))
+		// key 是当前对象的字段名。
+		for key := range typedValue {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		// key 是排序后的字段名。
+		for _, key := range keys {
+			// nestedValue 是该字段对应的待继续解析的字段值。
+			nestedValue := typedValue[key]
 			supplementEventFactByKey(fields, key, nestedValue)
 			supplementEventFacts(fields, nestedValue, depth+1)
 		}
@@ -596,11 +608,17 @@ func extFields(ext string) (updateKey, contentType string) {
 	return strAny(m["updateKey"]), strAny(m["contentType"])
 }
 
-// parseUpdateKey 封装parseUpdateKey业务协调。
+// parseUpdateKey 解析平台 updateKey 中的会话和订单标识；订单在前的确认收货四段键
+// 第二段是业务阶段码而不是订单号，误用会让确认收货事实落到不存在的伪订单上。
 func parseUpdateKey(updateKey string) (chatID, orderID string) {
-	// parts 用于本次流程后续判断的parts
+	// parts 是 updateKey 按冒号切分后的字段段。
 	parts := strings.Split(updateKey, ":")
 	if len(parts) >= 2 {
+		// stageCode、stageErr 是第二段阶段码的解析结果：短纯数字说明订单号位于第一段，
+		// 且该布局不含会话标识；其他情况沿用「会话:订单」布局。
+		if stageCode, stageErr := strconv.ParseUint(parts[1], 10, 64); stageErr == nil && stageCode < 1e9 {
+			return "", directOrderID(parts[0])
+		}
 		return parts[0], parts[1]
 	}
 	return "", ""
@@ -675,117 +693,4 @@ func trimGoofishSID(s string) string {
 		return s[:i]
 	}
 	return s
-}
-
-// orderIDPatterns 用于本次流程后续判断的订单IDPatterns
-var orderIDPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`orderId[=:](\d{10,})`),
-	regexp.MustCompile(`order_detail\?id=(\d{10,})`),
-	regexp.MustCompile(`bizOrderId[=:](\d{10,})`),
-	// 独立 id 参数必须位于查询参数边界，不能把 sid= 中的后缀误判为订单号。
-	regexp.MustCompile(`(?:^|[?&])id=(\d{10,})(?:[&#]|$)`),
-}
-
-// extractOrderRoleFromContent 封装extract订单RoleFrom内容业务协调。
-func extractOrderRoleFromContent(contentJSON string) string {
-	// c 用于本次流程后续判断的c
-	var c map[string]any
-	if json.Unmarshal([]byte(contentJSON), &c) != nil {
-		return ""
-	}
-	// path 表示当前遍历过程中的路径
-	for _, path := range [][]string{
-		{"dxCard", "item", "main", "exContent", "button", "targetUrl"},
-		{"dxCard", "item", "main", "targetUrl"},
-		{"dynamicOperation", "changeContent", "dxCard", "item", "main", "exContent", "button", "targetUrl"},
-	} {
-		if // role 用于本次流程后续判断的role
-		role := orderRoleFromURL(nestedString(c, path...)); role != "" {
-			return role
-		}
-	}
-	return ""
-}
-
-// orderRoleFromURL 封装订单RoleFromURL业务协调。
-func orderRoleFromURL(rawURL string) string {
-	if strings.TrimSpace(rawURL) == "" {
-		return ""
-	}
-	if strings.HasPrefix(rawURL, "fleamarket://") {
-		rawURL = "https://local.invalid/" + strings.TrimPrefix(rawURL, "fleamarket://")
-	}
-	// u、err 用于本次流程后续判断的u、err
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return normalizedOrderRole(u.Query().Get("role"))
-}
-
-// normalizedOrderRole 只接受平台协议中可识别的买卖双方角色，未知值不得影响事件归属判断。
-func normalizedOrderRole(value string) string {
-	// role 是去除大小写和空白差异后的平台角色字段。
-	role := strings.ToLower(strings.TrimSpace(value))
-	switch role {
-	case "seller", "buyer":
-		return role
-	default:
-		return ""
-	}
-}
-
-// bizTaskName 封装biz任务名称业务协调。
-func bizTaskName(raw string) string {
-	// tag 用于本次流程后续判断的tag
-	var tag map[string]any
-	if json.Unmarshal([]byte(raw), &tag) != nil {
-		return ""
-	}
-	return strAny(tag["taskName"])
-}
-
-// orderRoleFromTaskName 封装订单RoleFrom任务名称业务协调。
-func orderRoleFromTaskName(taskName string) string {
-	switch {
-	case strings.Contains(taskName, "买家"):
-		return "buyer"
-	case strings.Contains(taskName, "卖家"):
-		return "seller"
-	default:
-		return ""
-	}
-}
-
-// matchOrderID 封装match订单ID业务协调。
-func matchOrderID(s string) string {
-	// re 表示当前遍历过程中的re
-	for _, re := range orderIDPatterns {
-		if // m 用于本次流程后续判断的m
-		m := re.FindStringSubmatch(s); len(m) == 2 {
-			return m[1]
-		}
-	}
-	return ""
-}
-
-// extractOrderIDFromContent 封装extract订单IDFrom内容业务协调。
-func extractOrderIDFromContent(contentJSON string) string {
-	// c 用于本次流程后续判断的c
-	var c map[string]any
-	if json.Unmarshal([]byte(contentJSON), &c) != nil {
-		return ""
-	}
-	// path 表示当前遍历过程中的路径
-	for _, path := range [][]string{
-		{"dxCard", "item", "main", "exContent", "button", "targetUrl"},
-		{"dxCard", "item", "main", "targetUrl"},
-		{"dynamicOperation", "changeContent", "dxCard", "item", "main", "exContent", "button", "targetUrl"},
-	} {
-		if // id 用于本次流程后续判断的标识
-		id := matchOrderID(nestedString(c, path...)); id != "" {
-			return id
-		}
-	}
-	return ""
 }

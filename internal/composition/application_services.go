@@ -23,9 +23,12 @@ import (
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
+	itemgreetingapp "xianyu-go/internal/application/itemgreeting"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
+	libraryapp "xianyu-go/internal/application/library"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
+	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
 	orderapp "xianyu-go/internal/application/orders"
 	settingsapp "xianyu-go/internal/application/settings"
@@ -77,6 +80,8 @@ type Services struct {
 	itemCatalog *itemapp.CatalogService
 	// itemCatalogMutation 是商品创建、更新、删除和交付开关应用服务。
 	itemCatalogMutation *itemapp.CatalogMutationService
+	// itemAISettings 是商品级 AI 配置应用服务。
+	itemAISettings *itemapp.ItemAISettingsService
 	// accountLogin 是账号登录应用服务。
 	accountLogin *accountLoginService
 	// authentication 是用户会话、密码校验和登录凭据应用服务。
@@ -111,6 +116,8 @@ type Services struct {
 	analytics *analyticsapp.Service
 	// automationIssues 是自动化异常查询与人工处理应用服务。
 	automationIssues *automationapp.IssueService
+	// automationAudit 是规则日志（自动化行为审计）分页查询应用服务。
+	automationAudit *automationapp.AuditService
 	// automationRules 是自动化规则校验、分页和持久化应用服务。
 	automationRules *automationapp.RuleService
 	// deliveryTemplates 是发货模板 CRUD 应用服务。
@@ -123,12 +130,18 @@ type Services struct {
 	publishAutomationRules *automationapp.PublishRuleService
 	// defaultReplies 是默认回复配置与投递记录应用服务。
 	defaultReplies *defaultreplyapp.Service
+	// itemGreetings 是商品首次回复规则应用服务。
+	itemGreetings *itemgreetingapp.Service
+	// library 是本地资源库（图片库、商品模板、模板发布预检）应用服务。
+	library *libraryapp.Service
 	// keywords 是关键词规则与指定商品回复应用服务。
 	keywords *keywordsapp.Service
 	// settings 是系统、用户和账号 AI 设置应用服务。
 	settings *settingsapp.Service
 	// admin 是管理员用户管理与全局统计应用服务。
 	admin *adminapp.Service
+	// runtimeLogs 是管理员运行日志查询用例。
+	runtimeLogs *logsapp.Service
 }
 
 // LifecycleContext 返回已启动协调器拥有的进程生命周期 Context，供组合层 transport adapter 注册后台 worker。
@@ -311,6 +324,7 @@ type TransportPorts struct {
 	ItemSync                    *itemapp.SyncService
 	ItemCatalog                 *itemapp.CatalogService
 	ItemCatalogMutation         *itemapp.CatalogMutationService
+	ItemAISettings              *itemapp.ItemAISettingsService
 	AccountLogin                AccountLogin
 	QRLogin                     adapter.QRLoginService
 	PlatformCredentials         *accountapp.PlatformCredentialService
@@ -329,6 +343,7 @@ type TransportPorts struct {
 	NotificationChannels        *notificationsapp.ChannelService
 	Analytics                   *analyticsapp.Service
 	AutomationIssues            *automationapp.IssueService
+	AutomationAudit             *automationapp.AuditService
 	AutomationRules             *automationapp.RuleService
 	DeliveryTemplates           *deliveryapp.Service
 	Cards                       *cardsapp.Service
@@ -336,9 +351,14 @@ type TransportPorts struct {
 	APICardTester          cardsapp.APIRequestTester
 	PublishAutomationRules *automationapp.PublishRuleService
 	DefaultReplies         *defaultreplyapp.Service
-	Keywords               *keywordsapp.Service
-	Settings               *settingsapp.Service
-	Admin                  *adminapp.Service
+	ItemGreetings          *itemgreetingapp.Service
+	// Library 是本地资源库应用服务。
+	Library  *libraryapp.Service
+	Keywords *keywordsapp.Service
+	Settings *settingsapp.Service
+	Admin    *adminapp.Service
+	// RuntimeLogs 是管理员运行日志查询用例。
+	RuntimeLogs *logsapp.Service
 }
 
 // TransportPorts 返回已完成构造的只读服务引用；调用方不得在运行期替换任何字段。
@@ -351,15 +371,15 @@ func (services *Services) TransportPorts() TransportPorts {
 		ItemBatchPreview: services.itemBatchPreview, ItemBatchManagement: services.itemBatchManagement,
 		ItemCategoryRecommendation: services.itemCategoryRecommendation, ItemBatchPreviewPersistence: services.itemBatchPreviewPersistence,
 		ItemBatchLocalPublish: services.itemBatchLocalPublish, ItemSync: services.itemSync, ItemCatalog: services.itemCatalog,
-		ItemCatalogMutation: services.itemCatalogMutation, AccountLogin: services.accountLogin, QRLogin: services.qrLogin,
+		ItemCatalogMutation: services.itemCatalogMutation, ItemAISettings: services.itemAISettings, AccountLogin: services.accountLogin, QRLogin: services.qrLogin,
 		PlatformCredentials: services.platformCredentials, Authentication: services.authentication, LoginAudit: services.loginAudit,
 		PasswordLogin: services.passwordLogin, AccountDelete: services.accountDelete, AccountProfile: services.accountProfile,
 		AccountLongLogin: services.accountLongLogin, AccountSettings: services.accountSettings, AccountRuntime: services.accountRuntime,
 		AccountSummaries: services.accountSummaries, AccountTasks: services.accountTasks, Chat: services.chat,
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
-		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
-		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
-		Keywords: services.keywords, Settings: services.settings, Admin: services.admin,
+		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationAudit: services.automationAudit, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
+		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies, ItemGreetings: services.itemGreetings, Library: services.library,
+		Keywords: services.keywords, Settings: services.settings, Admin: services.admin, RuntimeLogs: services.runtimeLogs,
 	}
 }
 
@@ -477,13 +497,14 @@ func New(dependencies Dependencies) (*Services, error) {
 	}
 	// qrSessionRegistry 将扫码会话所有权、过期回收和幂等结果放在应用边界内。
 	qrSessionRegistry := accountapp.NewQRLoginSessionRegistry()
-	// catalogServices、catalogServicesErr 分别是商品目录服务集合及其组合期错误。
-	catalogServices, catalogServicesErr := buildItemCatalogServices(dependencies, sessionRecovery)
-	if catalogServicesErr != nil {
-		return nil, catalogServicesErr
+	// catalogServices、libraryService、catalogErr 分别是商品目录服务集合、本地资源库服务及其组合期错误。
+	catalogServices, libraryService, catalogErr := buildCatalogAndLibrary(dependencies, sessionRecovery, batchServices.preview)
+	if catalogErr != nil {
+		return nil, catalogErr
 	}
 	// services 是完成构造后只读注入 Server 的应用服务集合。
 	services := &Services{
+		library:                     libraryService,
 		lifecycleContext:            dependencies.LifecycleContext,
 		qrLogin:                     dependencies.QRLogin,
 		platformCredentials:         platformCredentials,
@@ -504,6 +525,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		})),
 		itemCatalog:            catalogServices.catalog,
 		itemCatalogMutation:    catalogServices.mutation,
+		itemAISettings:         catalogServices.aiSettings,
 		accountLogin:           &accountLoginService{cookieWriterFactory: cookieWriterFactory, cookieUpdaterFactory: cookieUpdaterFactory, sessionPort: accountRepository, createApplication: accountLoginCreate, qrApplication: accountQRLogin, qrSessions: qrSessionRegistry},
 		authentication:         nil,
 		loginAudit:             loginAudit,
@@ -526,10 +548,13 @@ func New(dependencies Dependencies) (*Services, error) {
 		apiCardTester:          dependencies.TransportApplications.APICardTester,
 		publishAutomationRules: dependencies.TransportApplications.PublishAutomationRules,
 		automationIssues:       dependencies.TransportApplications.AutomationIssues,
+		automationAudit:        dependencies.TransportApplications.AutomationAudit,
 		defaultReplies:         dependencies.TransportApplications.DefaultReplies,
+		itemGreetings:          dependencies.TransportApplications.ItemGreetings,
 		keywords:               dependencies.TransportApplications.Keywords,
 		settings:               dependencies.TransportApplications.Settings,
 		admin:                  dependencies.TransportApplications.Admin,
+		runtimeLogs:            dependencies.TransportApplications.RuntimeLogs,
 	}
 	// authentication、authenticationErr 分别是认证应用服务及其构造错误。
 	authentication, authenticationErr := accountapp.NewAuthenticationService(dependencies.AccountDependencies.NewAuthenticationRepository())

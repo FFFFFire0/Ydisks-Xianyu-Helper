@@ -58,7 +58,7 @@ func (repository *ItemCatalogRepository) Get(ctx context.Context, cookieID, item
 		}
 		return itemapp.CatalogItem{}, err
 	}
-	return itemapp.CatalogItem{ID: row.ID, CookieID: row.CookieID, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemDescription: row.ItemDescription, ItemCategory: row.ItemCategory, ItemPrice: row.ItemPrice, ItemDetail: row.ItemDetail, IsMultiSpec: row.IsMultiSpec, MultiQuantityDelivery: row.MultiQuantityDelivery}, nil
+	return itemapp.CatalogItem{ID: row.ID, CookieID: row.CookieID, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemDescription: row.ItemDescription, ItemCategory: row.ItemCategory, ItemPrice: row.ItemPrice, ItemDetail: row.ItemDetail, IsMultiSpec: row.IsMultiSpec, MultiQuantityDelivery: row.MultiQuantityDelivery, AIOverride: itemapp.ItemAIOverrideInherit}, nil
 }
 
 // Upsert 创建或完整保存本地商品，并将应用输入转换为数据库行模型。
@@ -97,7 +97,7 @@ func (repository *ItemCatalogRepository) UpsertPublishedItem(ctx context.Context
 	return repository.store.Items.Upsert(ctx, &db.ItemInfoRow{
 		CookieID: input.CookieID, ItemID: input.ItemID, ItemTitle: input.ItemTitle, ItemDescription: input.ItemDescription,
 		ItemCategory: input.ItemCategory, ItemPrice: input.ItemPrice, ItemDetail: input.ItemDetail,
-		MultiQuantityDelivery: input.MultiQuantityDelivery,
+		MultiQuantityDelivery: input.MultiQuantityDelivery, IsMultiSpec: input.IsMultiSpec,
 	})
 }
 
@@ -131,7 +131,7 @@ func catalogItemsFromRows(rows []db.ItemInfoRow) []itemapp.CatalogItem {
 	items := make([]itemapp.CatalogItem, 0, len(rows))
 	// row 表示当前待转换的数据库商品行。
 	for _, row := range rows {
-		items = append(items, itemapp.CatalogItem{ID: row.ID, CookieID: row.CookieID, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemDescription: row.ItemDescription, ItemCategory: row.ItemCategory, ItemPrice: row.ItemPrice, ItemDetail: row.ItemDetail, IsMultiSpec: row.IsMultiSpec, MultiQuantityDelivery: row.MultiQuantityDelivery})
+		items = append(items, itemapp.CatalogItem{ID: row.ID, CookieID: row.CookieID, ItemID: row.ItemID, ItemTitle: row.ItemTitle, ItemDescription: row.ItemDescription, ItemCategory: row.ItemCategory, ItemPrice: row.ItemPrice, ItemDetail: row.ItemDetail, IsMultiSpec: row.IsMultiSpec, MultiQuantityDelivery: row.MultiQuantityDelivery, AIOverride: row.AIOverride})
 	}
 	return items
 }

@@ -56,6 +56,10 @@ export interface AccountDetail {
   max_bargain_rounds?: number;
   /** 账号自定义提示词。 */
   custom_prompts?: string;
+  /** 人工发送消息后暂停自动回复的分钟数；0 表示关闭。 */
+  manual_pause_minutes?: number;
+  /** 人工接管时是否只暂停 AI 回复。 */
+  manual_pause_ai_only?: boolean;
 	// 账号级计划任务
 	/** 是否启用自动评价。 */
 	auto_rate_enabled?: boolean;
@@ -123,6 +127,12 @@ export interface AIReplySettings {
   max_bargain_rounds: number;
   /** 自定义提示词。 */
   custom_prompts: string;
+  /** AI 工作模式。 */
+  ai_mode: 'bargain_only' | 'full_service';
+  /** 人工发送消息后暂停自动回复的分钟数；0 表示关闭。 */
+  manual_pause_minutes?: number;
+  /** 人工接管时是否只暂停 AI 回复。 */
+  manual_pause_ai_only?: boolean;
 }
 
 /** 由当前 feature adapter 归一后的 NotificationChannelType UI 模型；不直接暴露 HTTP DTO。 */
@@ -276,6 +286,12 @@ export interface AIReplySettingsResponse {
   max_bargain_rounds: number;
   /** 自定义提示词。 */
   custom_prompts: string;
+  /** AI 工作模式。 */
+  ai_mode: 'bargain_only' | 'full_service';
+  /** 人工发送消息后暂停自动回复的分钟数；0 表示关闭。 */
+  manual_pause_minutes?: number;
+  /** 人工接管时是否只暂停 AI 回复。 */
+  manual_pause_ai_only?: boolean;
 }
 
 /** 通知绑定列表中的单条记录。 */

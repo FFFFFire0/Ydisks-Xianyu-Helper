@@ -76,6 +76,11 @@ func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]Autom
 		)
 		runs = append(runs, issue)
 	}
+	// iterErr 是逐行读取中途的数据库错误；必须在关闭前检查，否则会把截断的问题列表当作完整结果。
+	if iterErr := runRows.Err(); iterErr != nil {
+		_ = runRows.Close()
+		return nil, nil, iterErr
+	}
 	if // err 用于本次流程后续判断的err
 	err := runRows.Close(); err != nil {
 		return nil, nil, err
@@ -302,7 +307,7 @@ func (a *AutomationRules) ClaimDueDeferredTasks(ctx context.Context, limit int) 
 	// now 用于本次流程后续判断的now
 	now := time.Now().UTC().Unix()
 	// rows、err 用于本次流程后续判断的rows、err
-	rows, err := a.DB.QueryContext(ctx, `SELECT id,task_key,cookie_id,trigger_type,task_json,due_at,attempt_count,created_at
+	rows, err := a.DB.QueryContext(ctx, `SELECT id,task_key,cookie_id,trigger_type,task_json,due_at,attempt_count
   FROM automation_pending_tasks
 	 WHERE ((status='pending' AND due_at<=?) OR (status='running' AND lease_expires_at<?)) AND attempt_count<5
  ORDER BY due_at,id LIMIT ?`, now, now, limit)
@@ -315,11 +320,16 @@ func (a *AutomationRules) ClaimDueDeferredTasks(ctx context.Context, limit int) 
 		// task 用于本次流程后续判断的任务
 		var task DeferredAutomationTask
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&task.ID, &task.TaskKey, &task.CookieID, &task.TriggerType, &task.TaskJSON, &task.DueAt, &task.ClaimVersion, &task.CreatedAt); err != nil {
+		err := rows.Scan(&task.ID, &task.TaskKey, &task.CookieID, &task.TriggerType, &task.TaskJSON, &task.DueAt, &task.ClaimVersion); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		candidates = append(candidates, task)
+	}
+	// iterErr 是逐行读取中途的数据库错误；截断的候选集不能被当作本轮完整的到期任务。
+	if iterErr := rows.Err(); iterErr != nil {
+		_ = rows.Close()
+		return nil, iterErr
 	}
 	if // err 用于本次流程后续判断的err
 	err := rows.Close(); err != nil {
@@ -360,17 +370,6 @@ func (a *AutomationRules) FinishDeferredTask(ctx context.Context, id int64, clai
 	   SET status=CASE WHEN attempt_count>=5 THEN 'dead_letter' ELSE 'pending' END,
 	       due_at=?,lease_expires_at=0,error_message=?,updated_at=CURRENT_TIMESTAMP
 	 WHERE id=? AND status='running' AND attempt_count=?`, time.Now().UTC().Add(retryDelay).Unix(), errMsg, id, claimVersion)
-	return requireDeferredTaskOwner(res, err)
-}
-
-// PostponeDeferredTask 把等待本地事实的延期任务放回待重试队列，且不消耗 5 次重试预算。
-// 未知角色简化事件等待订单/商品同步属于良性等待；这类失败不应进入死信或触发人工告警。
-func (a *AutomationRules) PostponeDeferredTask(ctx context.Context, id int64, claimVersion int, dueAt int64, errMsg string) error {
-	// res、err 保存放回待重试状态的更新结果；attempt_count 回退本次领取的计数。
-	res, err := a.DB.ExecContext(ctx, `UPDATE automation_pending_tasks
-	   SET status='pending',attempt_count=CASE WHEN attempt_count>0 THEN attempt_count-1 ELSE 0 END,
-	       due_at=?,lease_expires_at=0,error_message=?,updated_at=CURRENT_TIMESTAMP
-	 WHERE id=? AND status='running' AND attempt_count=?`, dueAt, errMsg, id, claimVersion)
 	return requireDeferredTaskOwner(res, err)
 }
 
@@ -598,7 +597,8 @@ SELECT COUNT(*) FROM automation_runs
 	res, updateErr := transaction.ExecContext(ctx, `UPDATE automation_runs
 	   SET status='running',action_started=0,attempt_count=attempt_count+1,
 	       lease_expires_at=?,next_retry_at=0,error_message='',updated_at=CURRENT_TIMESTAMP
-	 WHERE id=? AND attempt_count=? AND status IN ('needs_review','failed') AND action_started=0`, leaseExpiresAt, runID, attempt)
+	 WHERE id=? AND attempt_count=? AND action_started=0
+	   AND (status IN ('needs_review','failed') OR (`+resumableObsoleteProgressRunSQL+` AND delivery_proof<>''))`, leaseExpiresAt, runID, attempt)
 	if updateErr != nil {
 		return false, updateErr
 	}

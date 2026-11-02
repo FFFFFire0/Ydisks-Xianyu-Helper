@@ -42,8 +42,14 @@ type aiReplySettingsUpdateRequest struct {
 	MaxDiscountAmount int `json:"max_discount_amount"`
 	// MaxBargainRounds 是自动砍价允许的最大轮次。
 	MaxBargainRounds int `json:"max_bargain_rounds"`
-	// CustomPrompts 是账号专用的补充提示词。
+	// CustomPrompts 是账号专用的补充提示词或客服规则。
 	CustomPrompts string `json:"custom_prompts"`
+	// AIMode 是 AI 工作模式：bargain_only 或 full_service。
+	AIMode string `json:"ai_mode"`
+	// ManualPauseMinutes 是人工发送消息后暂停自动回复的分钟数；0 表示关闭。
+	ManualPauseMinutes int `json:"manual_pause_minutes"`
+	// ManualPauseAIOnly 表示人工接管时只暂停 AI 回复。
+	ManualPauseAIOnly bool `json:"manual_pause_ai_only"`
 }
 
 // aiModelListRequest 是读取指定 AI 服务模型目录的 HTTP 请求 DTO。
@@ -175,7 +181,7 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// level 是待应用的日志级别；ok 表示请求是否更新日志级别。
 	if level, ok := values["log_level"]; ok {
-		_ = logging.SetLevel(level)
+		s.applyLogLevel(r, level)
 	}
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})
 }
@@ -207,7 +213,8 @@ func validateSystemSettingValues(values map[string]string) error {
 	// level 是待校验的日志级别；ok 表示普通设置中包含该字段。
 	if level, ok := values["log_level"]; ok {
 		// err 是日志级别解析错误。
-		_, err := logging.ParseLevel(level)
+		// 支持“info,mtop=debug”形式的模块等级覆盖。
+		_, _, err := logging.ParseLevelSpec(level)
 		if err != nil {
 			return err
 		}
@@ -293,7 +300,7 @@ func (s *Server) setSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	if key == "log_level" {
 		// err 表示单项日志级别校验错误。
-		if _, err := logging.ParseLevel(req.Value); err != nil {
+		if _, _, err := logging.ParseLevelSpec(req.Value); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -314,7 +321,7 @@ func (s *Server) setSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if key == "log_level" {
-		_ = logging.SetLevel(req.Value)
+		s.applyLogLevel(r, req.Value)
 	}
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})
 }
@@ -344,7 +351,8 @@ func (s *Server) listAIReply(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		result[row.CookieID] = aiReplySettingsResponse{
 			CookieID: row.CookieID, AIEnabled: row.AIEnabled, AutoAdjustPriceEnabled: row.AutoAdjustPriceEnabled, MaxDiscountPercent: row.MaxDiscountPercent,
-			MaxDiscountAmount: row.MaxDiscountAmount, MaxBargainRounds: row.MaxBargainRounds, CustomPrompts: row.CustomPrompts,
+			MaxDiscountAmount: row.MaxDiscountAmount, MaxBargainRounds: row.MaxBargainRounds, CustomPrompts: row.CustomPrompts, AIMode: row.AIMode,
+			ManualPauseMinutes: row.ManualPauseMinutes, ManualPauseAIOnly: row.ManualPauseAIOnly,
 			// 账号标识和五项配置字段保持旧 JSON 名称。
 			// 布尔值继续由数据库整数转换得到。
 			// 自定义提示词不做额外格式化。
@@ -369,7 +377,7 @@ func (s *Server) getAIReply(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, settingsapp.ErrConfigNotFound) {
 			// 未保存配置使用与旧接口一致的默认值。
-			writeJSON(w, http.StatusOK, aiReplySettingsResponse{AIEnabled: false, AutoAdjustPriceEnabled: false, MaxDiscountPercent: 10, MaxDiscountAmount: 100, MaxBargainRounds: 3, CustomPrompts: ""})
+			writeJSON(w, http.StatusOK, aiReplySettingsResponse{AIEnabled: false, AutoAdjustPriceEnabled: false, MaxDiscountPercent: 10, MaxDiscountAmount: 100, MaxBargainRounds: 3, CustomPrompts: "", AIMode: "bargain_only", ManualPauseMinutes: 10, ManualPauseAIOnly: true})
 			return
 		}
 		if writeSettingsAccountError(w, err) {
@@ -385,7 +393,7 @@ func (s *Server) getAIReply(w http.ResponseWriter, r *http.Request) {
 	// CustomPrompts 仍返回原始提示词文本。
 	// 该响应仅静态化 JSON 结构，不改变存储或校验逻辑。
 	// 旧客户端可以继续直接读取这些字段。
-	writeJSON(w, http.StatusOK, aiReplySettingsResponse{CookieID: cfg.CookieID, AIEnabled: cfg.AIEnabled, AutoAdjustPriceEnabled: cfg.AutoAdjustPriceEnabled, MaxDiscountPercent: cfg.MaxDiscountPercent, MaxDiscountAmount: cfg.MaxDiscountAmount, MaxBargainRounds: cfg.MaxBargainRounds, CustomPrompts: cfg.CustomPrompts})
+	writeJSON(w, http.StatusOK, aiReplySettingsResponse{CookieID: cfg.CookieID, AIEnabled: cfg.AIEnabled, AutoAdjustPriceEnabled: cfg.AutoAdjustPriceEnabled, MaxDiscountPercent: cfg.MaxDiscountPercent, MaxDiscountAmount: cfg.MaxDiscountAmount, MaxBargainRounds: cfg.MaxBargainRounds, CustomPrompts: cfg.CustomPrompts, AIMode: cfg.AIMode, ManualPauseMinutes: cfg.ManualPauseMinutes, ManualPauseAIOnly: cfg.ManualPauseAIOnly})
 }
 
 // setAIReply 封装setAI回复业务协调。
@@ -425,6 +433,15 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "最大砍价轮次必须在 1 到 10 之间")
 		return
 	}
+	if req.ManualPauseMinutes < 0 || req.ManualPauseMinutes > 1440 {
+		writeErr(w, http.StatusBadRequest, "人工接管暂停时长必须在 0 到 1440 分钟之间")
+		return
+	}
+	// requestedMode 是请求中去除首尾空白后的 AI 工作模式；空值表示沿用默认的仅砍价模式，其余取值必须是已支持的模式。
+	if requestedMode := strings.TrimSpace(req.AIMode); requestedMode != "" && requestedMode != "bargain_only" && requestedMode != "full_service" {
+		writeErr(w, http.StatusBadRequest, "AI 模式无效，仅支持 bargain_only 或 full_service")
+		return
+	}
 	if req.AutoAdjustPriceEnabled && !req.AIEnabled {
 		writeErr(w, http.StatusBadRequest, "开启 AI 自动改价前必须先启用 AI 议价")
 		return
@@ -433,7 +450,8 @@ func (s *Server) setAIReply(w http.ResponseWriter, r *http.Request) {
 	err := s.settingsApplication().UpsertAIReply(r.Context(), sess.UserID, cid, settingsapp.AIReplySettings{
 		CookieID: cid, AIEnabled: req.AIEnabled, AutoAdjustPriceEnabled: req.AutoAdjustPriceEnabled, MaxDiscountPercent: req.MaxDiscountPercent,
 		MaxDiscountAmount: req.MaxDiscountAmount, MaxBargainRounds: req.MaxBargainRounds,
-		CustomPrompts: req.CustomPrompts,
+		CustomPrompts: req.CustomPrompts, AIMode: req.AIMode,
+		ManualPauseMinutes: req.ManualPauseMinutes, ManualPauseAIOnly: req.ManualPauseAIOnly,
 	})
 	if err != nil {
 		if errors.Is(err, settingsapp.ErrPricingModeConflict) {
@@ -572,4 +590,22 @@ func (s *Server) setUserSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})
+}
+
+// applyLogLevel 在设置保存成功后应用新的日志等级配置，并留下一条含新旧值的审计日志。
+// level 已通过 ParseLevelSpec 校验；审计日志在切换之前按旧等级输出，避免新等级把这条记录自己过滤掉。
+// 应用失败时保留现有等级（SetLevel 不会产生部分结果）。
+func (s *Server) applyLogLevel(r *http.Request, level string) {
+	// previous 是变更前的全局日志等级文本，仅用于审计。
+	previous := logging.Level.Level().String()
+	// err 是日志等级配置的解析错误，非空时拒绝应用。
+	if _, _, err := logging.ParseLevelSpec(level); err != nil {
+		s.Logger.WarnContext(r.Context(), "应用日志等级失败，保留现有等级", "level", level, "err", err)
+		return
+	}
+	s.Logger.InfoContext(r.Context(), "日志等级即将更新", "from", previous, "to", level)
+	// err 是应用等级配置的失败原因；SetLevel 失败时不会产生部分结果。
+	if err := logging.SetLevel(level); err != nil {
+		s.Logger.WarnContext(r.Context(), "应用日志等级失败，保留现有等级", "level", level, "err", err)
+	}
 }

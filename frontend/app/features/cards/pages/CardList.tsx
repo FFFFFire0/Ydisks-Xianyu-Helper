@@ -1,15 +1,20 @@
-import { Copy,CreditCard,Edit,FileText,Globe,Image as ImageIcon,Package,Plus,Save,Search,SlidersHorizontal,Trash2,Upload,X } from 'lucide-react';
+import { ClipboardList,Copy,CreditCard,Edit,FileText,Globe,Image as ImageIcon,Package,Plus,Save,Search,SlidersHorizontal,Trash2,Upload,X } from 'lucide-react';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { Card, testCardAPI } from '../api';
-import { useCardActions } from '../cardActions';
 import { APIRequestBuilder } from '../components/APIRequestBuilder';
+import { apiConfigFromEditForm, apiConfigFromAddForm, updateAPIEditForm, updateAPIAddForm } from '../editConfig';
+import { useCardActions } from '../cardActions';
 import { BatchCardImportModal } from '../components/BatchCardImportModal';
 import { CardIcon } from '../components/CardIcon';
+import { CardStockDialog } from '../components/CardStockDialog';
 import { useCardBatchActions,useCardsData } from '../hooks';
+import { ImageSourceField } from '../../../../shared/ui/ImageSourceField';
+import { PageHeader } from '../../../../shared/ui/PageHeader';
+import type { CardListProps } from '../types';
 
 // CardList 渲染卡密列表组件。
-const CardList: React.FC = () => {
+const CardList: React.FC<CardListProps> = ({ libraryImageChooser }) => {
   // { 解构得到当前 Hook 返回的状态和操作函数。
   const { cards, loadCards } = useCardsData();
   // cardActions 集中管理卡密编辑、新增、删除、筛选和模板动作。
@@ -23,7 +28,9 @@ const CardList: React.FC = () => {
     nameSearch,
     setNameSearch,
     showEditModal,
-    setShowEditModal,
+    closeEdit,
+    editLoading,
+    editError,
     showAddModal,
     setShowAddModal,
     selectedCard,
@@ -41,14 +48,12 @@ const CardList: React.FC = () => {
   } = cardActions;
   // batchState 批量发布状态。
   const batchState = useCardBatchActions({ dataCards, loadCards });
+  // stockCard 是正在查看库存记录的卡密组；为空表示弹窗关闭，属于页面瞬时 UI 状态。
+  const [stockCard, setStockCard] = React.useState<Card | null>(null);
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between md:items-end gap-4">
-        <div>
-          <h2 className="text-4xl font-extrabold text-gray-900 tracking-tight">卡密库存</h2>
-          <p className="text-gray-500 mt-2 font-medium">管理自动发货的卡密、链接或图片资源。</p>
-        </div>
+    <div className="min-w-0 space-y-8 animate-fade-in">
+      <PageHeader title="卡密库存" description="管理自动发货的卡密、链接或图片资源。">
         <div className="flex items-center gap-3">
           <button
             onClick={batchState.openBatchModal}
@@ -65,7 +70,7 @@ const CardList: React.FC = () => {
           添加新卡密
         </button>
         </div>
-      </div>
+      </PageHeader>
 
       <div className="ios-card rounded-xl overflow-hidden shadow-lg border-0 bg-white">
         <div className="flex flex-col gap-3 border-b border-gray-50 bg-surface-muted p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -118,14 +123,16 @@ const CardList: React.FC = () => {
               {filteredCards.map(/* 当前回调处理集合中的单个元素。 */ (card) => {
                 // 计算库存或内容预览
                 let stockInfo = '';
-                if (card.type === 'data' && card.data_content) {
+                if (card.type === 'data' && (card.data_content || card.sold_count)) {
                   // lines 文本行列表。
-                  const lines = card.data_content.split('\n').filter(/* 当前回调处理集合中的单个元素。 */ line => line.trim());
-                  stockInfo = `库存: ${lines.length} 条`;
+                  const lines = (card.data_content ?? '').split('\n').filter(/* 当前回调处理集合中的单个元素。 */ line => line.trim());
+                  stockInfo = `未售 ${lines.length} 条 · 已售 ${card.sold_count ?? 0} 条`;
                 } else if (card.type === 'text' && card.text_content) {
                   stockInfo = card.text_content;
                 } else if (card.type === 'api' && card.api_config) {
                   stockInfo = card.api_config.url;
+                } else if (card.type === 'image' && card.library_image_id) {
+                  stockInfo = '图片库图片';
                 } else if (card.type === 'image' && card.image_url) {
                   stockInfo = '图片链接';
                 }
@@ -190,6 +197,16 @@ const CardList: React.FC = () => {
                     </td>
                     <td className="px-3 py-5">
                       <div className="flex items-center justify-end gap-0.5">
+                        {(card.type === 'data' || card.type === 'api') && (
+                          <button
+                            onClick={/* 打开该卡密组的库存记录弹窗。 */ () => setStockCard(card)}
+                            aria-label={`查看卡密 ${card.name} 库存记录`}
+                            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black"
+                            title="库存记录"
+                          >
+                            <ClipboardList className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleEdit(card)}
                           className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black"
@@ -221,6 +238,9 @@ const CardList: React.FC = () => {
         )}
       </div>
 
+      {/* 库存记录弹窗：按卡密组 key 挂载，切换卡密组会重置筛选并取消旧请求 */}
+      {stockCard && <CardStockDialog key={stockCard.id} card={stockCard} onClose={/* 关闭弹窗并丢弃卡密明文。 */ () => setStockCard(null)} />}
+
       {/* 编辑卡密弹窗 - 使用 Portal */}
       {showEditModal && selectedCard && createPortal(
         <div className="modal-overlay-centered">
@@ -228,7 +248,7 @@ const CardList: React.FC = () => {
             <div className="modal-header">
               <h3 className="text-2xl font-extrabold text-gray-900">编辑卡密</h3>
               <button
-                onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowEditModal(false)}
+                onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => closeEdit()}
                 className="p-2 rounded-xl hover:bg-gray-100 transition-colors"
               >
                 <X className="w-5 h-5 text-gray-500" />
@@ -236,7 +256,9 @@ const CardList: React.FC = () => {
             </div>
 
             <div className="modal-body">
-              <div className="space-y-5">
+              {editLoading && <p role="status" className="mb-4 text-gray-500">加载中…</p>}
+              {editError && <div role="alert" className="mb-4 text-red-600">{editError} <button type="button" onClick={/* retryEditor 重新读取当前卡密的完整配置。 */ () => void handleEdit(selectedCard)}>重试</button></div>}
+              <fieldset disabled={editLoading || !!editError} className="space-y-5">
                 {/* 基本信息 */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -269,6 +291,7 @@ const CardList: React.FC = () => {
                 {editForm.type === 'api' && (
                   <>
                     <APIRequestBuilder
+                      key={selectedCard.id}
                       url={editForm.api_url || ''}
                       method={editForm.api_method || 'GET'}
                       timeout={editForm.api_timeout || 10}
@@ -278,23 +301,8 @@ const CardList: React.FC = () => {
                       body={editForm.api_body || ''}
                       responsePath={editForm.api_response_path || ''}
                       retryEnabled={editForm.api_retry_enabled || false}
-                      headersAction={editForm.api_headers_action || 'retain'}
-                      paramsAction={editForm.api_params_action || 'retain'}
-	                      onTest={/* editAPITest 使用当前编辑草稿发起临时 API 测试，不保存草稿。 */ () => testCardAPI({ url: editForm.api_url || '', method: editForm.api_method || 'GET', timeout_seconds: editForm.api_timeout || 10, headers: editForm.api_headers || undefined, params: editForm.api_params || undefined, content_type: editForm.api_content_type || 'application/json', body: editForm.api_body || undefined, response_path: editForm.api_response_path || undefined, retry_enabled: editForm.api_retry_enabled || false })}
-                      onChange={/* 当前回调把 API 请求编辑器字段写回编辑草稿。 */ (field, value) => setEditForm(/* currentUpdater 基于最新编辑草稿合并 API 字段。 */ current => ({
-                        ...current,
-                        ...(field === 'url' ? { api_url: String(value) } : {}),
-                        ...(field === 'method' ? { api_method: value as 'GET' | 'POST' } : {}),
-                        ...(field === 'timeout' ? { api_timeout: Number(value) } : {}),
-                        ...(field === 'headers' ? { api_headers: String(value) } : {}),
-                        ...(field === 'params' ? { api_params: String(value) } : {}),
-                        ...(field === 'contentType' ? { api_content_type: String(value) } : {}),
-                        ...(field === 'body' ? { api_body: String(value) } : {}),
-                        ...(field === 'responsePath' ? { api_response_path: String(value) } : {}),
-                        ...(field === 'retryEnabled' ? { api_retry_enabled: Boolean(value) } : {}),
-                        ...(field === 'headersAction' ? { api_headers_action: value as 'retain' | 'replace' | 'clear' } : {}),
-                        ...(field === 'paramsAction' ? { api_params_action: value as 'retain' | 'replace' | 'clear' } : {}),
-                      }))}
+                      onTest={/* editAPITest 合并同一保存草稿并绑定当前卡密与取消信号。 */ signal => testCardAPI(apiConfigFromEditForm(editForm), selectedCard.id, { signal })}
+                      onChange={/* updateRequestField 将字段修改写回当前草稿。 */ (field, value) => setEditForm(/* updateDraft 合并最新表单与字段变更。 */ current => updateAPIEditForm(current, field, value))}
                     />
                   </>
                 )}
@@ -340,27 +348,15 @@ const CardList: React.FC = () => {
                   <div className="border border-gray-200 rounded-xl p-4 bg-gray-50">
                     <h3 className="font-bold text-gray-900 mb-3">图片配置</h3>
                     <div>
-                      <label className="block text-sm font-bold text-gray-700 mb-2">图片 URL</label>
-                      <input
-                        type="url"
-                        value={editForm.image_url || ''}
-                        onChange={/* 当前回调处理用户交互或异步状态变化。 */ (e) => setEditForm({ ...editForm, image_url: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl font-mono text-sm"
-                        placeholder="https://example.com/image.png"
+                      <label className="block text-sm font-bold text-gray-700 mb-2">卡密图片</label>
+                      <ImageSourceField
+                        value={{ url: editForm.image_url || '', libraryImageId: editForm.library_image_id || 0 }}
+                        onChange={/* source 是用户选择的新图片来源；外链与图片库图片互斥。 */ source => setEditForm({ ...editForm, image_url: source.url, library_image_id: source.libraryImageId })}
+                        chooser={libraryImageChooser}
+                        urlPlaceholder="https://example.com/image.png"
                       />
-                      <p className="text-xs text-gray-500 mt-2">仅保存图片 URL；发货时会临时下载并上传到闲鱼</p>
+                      <p className="text-xs text-gray-500 mt-2">图片库图片发货时由服务端读取；外链图片发货时会临时下载并上传到闲鱼</p>
                     </div>
-                    {editForm.image_url && (
-                      <div className="mt-3">
-                        <label className="block text-sm font-bold text-gray-700 mb-2">图片预览</label>
-                        <img
-                          src={editForm.image_url}
-                          alt="预览"
-                          className="max-w-full max-h-48 rounded-xl border border-gray-200"
-                          onError={/* 当前回调处理用户交互或异步状态变化。 */ (e) => { e.currentTarget.src = 'https://via.placeholder.com/400x200?text=图片加载失败'; }}
-                        />
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -410,19 +406,20 @@ const CardList: React.FC = () => {
                     />
                   </button>
                 </div>
-              </div>
+              </fieldset>
             </div>
 
             <div className="modal-footer">
               <div className="flex gap-3 w-full">
                 <button
-                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowEditModal(false)}
+                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => closeEdit()}
                   className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
                 >
                   取消
                 </button>
                 <button
                   onClick={handleSaveEdit}
+                  disabled={editLoading || !!editError}
                   className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
                 >
                   <Save className="w-4 h-4" />
@@ -471,7 +468,7 @@ const CardList: React.FC = () => {
                   <div className="grid grid-cols-4 gap-2">
                     <button
                       type="button"
-                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'data', content: '' })}
+                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'data', content: '', library_image_id: 0 })}
                       className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'data' ? 'bg-brand text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                     >
                       <CreditCard className="w-5 h-5 mx-auto mb-1" />
@@ -479,7 +476,7 @@ const CardList: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'text', content: '' })}
+                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'text', content: '', library_image_id: 0 })}
                       className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'text' ? 'bg-brand text-white' : 'bg-gray-100 text-gray-600'}`}
                     >
                       <FileText className="w-5 h-5 mx-auto mb-1" />
@@ -487,7 +484,7 @@ const CardList: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'image', content: '' })}
+                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'image', content: '', library_image_id: 0 })}
                       className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'image' ? 'bg-brand text-white' : 'bg-gray-100 text-gray-600'}`}
                     >
                       <ImageIcon className="w-5 h-5 mx-auto mb-1" />
@@ -495,7 +492,7 @@ const CardList: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'api', content: '' })}
+                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setAddForm({ ...addForm, type: 'api', content: '', library_image_id: 0 })}
                       className={`p-3 rounded-xl font-bold transition-all ${addForm.type === 'api' ? 'bg-brand text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                     >
                       <Globe className="w-5 h-5 mx-auto mb-1" />
@@ -506,18 +503,17 @@ const CardList: React.FC = () => {
 
                 {addForm.type !== 'api' && <div className="space-y-2">
                   <label className="block text-sm font-bold text-gray-700 mb-2">
-                    {addForm.type === 'data' ? '库存内容（一行一个）' : addForm.type === 'text' ? '固定回复内容' : '图片 URL'}
+                    {addForm.type === 'data' ? '库存内容（一行一个）' : addForm.type === 'text' ? '固定回复内容' : '卡密图片'}
                   </label>
                   {addForm.type === 'image' ? (
                     <div className="space-y-2">
-                      <input
-                        type="url"
-                        value={addForm.content}
-                        onChange={/* 当前回调处理用户交互或异步状态变化。 */ (e) => setAddForm({ ...addForm, content: e.target.value })}
-                        className="w-full ios-input px-4 py-3 rounded-xl"
-                        placeholder="https://example.com/card.png"
+                      <ImageSourceField
+                        value={{ url: addForm.content, libraryImageId: addForm.library_image_id }}
+                        onChange={/* source 是用户选择的新图片来源；外链与图片库图片互斥。 */ source => setAddForm({ ...addForm, content: source.url, library_image_id: source.libraryImageId })}
+                        chooser={libraryImageChooser}
+                        urlPlaceholder="https://example.com/card.png"
                       />
-                      <p className="text-xs text-gray-500">仅保存图片 URL；发货时会临时下载并上传到闲鱼</p>
+                      <p className="text-xs text-gray-500">图片库图片发货时由服务端读取；外链图片发货时会临时下载并上传到闲鱼</p>
                     </div>
                   ) : (
                     <textarea
@@ -544,19 +540,8 @@ const CardList: React.FC = () => {
                       body={addForm.api_body}
                       responsePath={addForm.api_response_path}
                       retryEnabled={addForm.api_retry_enabled}
-	                      onTest={/* addAPITest 使用当前新增草稿发起临时 API 测试，不创建卡密。 */ () => testCardAPI({ url: addForm.content, method: addForm.api_method, timeout_seconds: addForm.api_timeout, headers: addForm.api_headers || undefined, params: addForm.api_params || undefined, content_type: addForm.api_content_type, body: addForm.api_body || undefined, response_path: addForm.api_response_path || undefined, retry_enabled: addForm.api_retry_enabled })}
-                      onChange={/* 当前回调把 API 请求编辑器字段写回新增草稿。 */ (field, value) => setAddForm(/* currentUpdater 基于最新新增草稿合并 API 字段。 */ current => ({
-                        ...current,
-                        ...(field === 'url' ? { content: String(value) } : {}),
-                        ...(field === 'method' ? { api_method: value as 'GET' | 'POST' } : {}),
-                        ...(field === 'timeout' ? { api_timeout: Number(value) } : {}),
-                        ...(field === 'headers' ? { api_headers: String(value) } : {}),
-                        ...(field === 'params' ? { api_params: String(value) } : {}),
-                        ...(field === 'contentType' ? { api_content_type: String(value) } : {}),
-                        ...(field === 'body' ? { api_body: String(value) } : {}),
-                        ...(field === 'responsePath' ? { api_response_path: String(value) } : {}),
-                        ...(field === 'retryEnabled' ? { api_retry_enabled: Boolean(value) } : {}),
-                      }))}
+	                      onTest={/* addAPITest 使用当前新增草稿发起临时 API 测试，不创建卡密。 */ signal => testCardAPI(apiConfigFromAddForm(addForm), undefined, { signal })}
+                      onChange={/* updateRequestField 将字段修改写回当前草稿。 */ (field, value) => setAddForm(/* updateDraft 合并最新表单与字段变更。 */ current => updateAPIAddForm(current, field, value))}
                     />
                   </>
                 )}

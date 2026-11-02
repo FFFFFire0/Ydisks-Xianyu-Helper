@@ -15,18 +15,42 @@ import (
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/keywordmatch"
 	"xianyu-go/internal/xianyu/ws"
 )
 
 // ReplyResult 回复结果。
 type ReplyResult struct {
-	Text      string // 文本回复（可空）
-	ImageURL  string // 图片回复（可空）
-	Source    string // 回复来源：API/关键词/AI/默认
-	Skip      bool   // true 表示匹配到空回复，不发送任何内容
-	ReplyOnce bool   // 仅默认回复使用，发送状态由 Handle 持久化
+	Text     string // 文本回复（可空）
+	ImageURL string // 图片回复（可空）
+	// LibraryImageID 是图片库图片主键（0 表示未使用）；与 ImageURL 互斥，发送时由聊天应用读取字节并走统一上传链路。
+	LibraryImageID int64
+	Source         string // 回复来源：API/关键词/AI/默认
+	Skip           bool   // true 表示匹配到空回复，不发送任何内容
+	ReplyOnce      bool   // 默认回复与商品首次回复使用，发送状态由 Handle 持久化
+	// onceRecords 是 ReplyOnce 回复使用的投递记录仓储；为空时使用账号默认回复记录。
+	onceRecords onceRecordStore
 	// AutoPriceQuote 是 AI 已明确承诺且通过价格边界校验的可执行报价。
 	AutoPriceQuote *AIPriceQuoteProposal
+}
+
+// hasImage 判断回复是否携带图片（URL 或图片库图片），用于一次性投递记录的分段领取。
+func (r *ReplyResult) hasImage() bool {
+	return r.ImageURL != "" || r.LibraryImageID > 0
+}
+
+// onceRecordStore 是“每个会话只投递一次”回复的持久化端口，由账号默认回复和商品首次回复各自实现。
+type onceRecordStore interface {
+	// ClaimRecord 原子领取投递权；返回的记录携带已成功的分段。
+	ClaimRecord(ctx context.Context, cookieID, chatID string, needsText, needsImage bool) (db.DefaultReplyRecord, bool, error)
+	// MarkPartSent 标记 text 或 image 分段已被平台确认。
+	MarkPartSent(ctx context.Context, cookieID, chatID, part string) error
+	// MarkRecordSent 标记完整回复投递完成。
+	MarkRecordSent(ctx context.Context, cookieID, chatID string) error
+	// MarkRecordFailed 标记确定未送达，允许后续重试。
+	MarkRecordFailed(ctx context.Context, cookieID, chatID, message string) error
+	// MarkRecordUncertain 隔离结果不确定的投递，禁止自动重发。
+	MarkRecordUncertain(ctx context.Context, cookieID, chatID, message string) error
 }
 
 // AIPriceQuoteProposal 是等待回复发送成功后绑定到会话的 AI 报价。
@@ -63,6 +87,8 @@ type ReplyMessage struct {
 	Text string
 	// ImageURL 是可选的来源图片地址；上传和尺寸处理由聊天应用完成。
 	ImageURL string
+	// LibraryImageID 是可选的图片库图片主键；与 ImageURL 互斥，读取、上传和尺寸处理由聊天应用完成。
+	LibraryImageID int64
 }
 
 // ReplySendResult 是聊天应用投递完整回复后的分段确认结果。
@@ -115,17 +141,74 @@ func newReplyService(cookieID string, store *db.Store, delivery ReplyDelivery, a
 	return service
 }
 
-// Handle 收到一条聊天消息，按四级优先级回复。
+// Handle 收到一条聊天消息：先尝试商品首次回复，再按四级优先级回复。
 // 由 Account 在防抖后调用。返回是否产生了回复。
-// Handle 处理当前值。
 func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
-	// res 用于本次流程后续判断的响应
-	res := r.resolve(ctx, m)
-	if res == nil || res.Skip {
+	// pause 是当前会话的人工接管状态；整段静默时连商品首次回复也不发送。
+	pause := r.manualPauseState(ctx, m.ChatID)
+	ctx = context.WithValue(ctx, manualPauseContextKey{}, pause)
+	if pause.Active && !pause.AIOnly {
+		r.logger.InfoContext(ctx, "会话处于人工接管窗口，跳过全部自动回复", "chat_id", m.ChatID)
 		return nil
 	}
-	// 发送：图片优先，文本随后。reply_once 使用持久化分段状态，失败时只重试
-	// 尚未成功的部分。
+	// 商品首次回复失败只记录日志，不得阻断买家本条消息的正常回复链路。
+	r.handleItemGreeting(ctx, m)
+	// res 用于本次流程后续判断的响应
+	res := r.resolve(ctx, m)
+	if res == nil {
+		r.logger.DebugContext(ctx, "自动回复未命中任何规则，不回复")
+		return nil
+	}
+	if res.Skip {
+		r.logger.DebugContext(ctx, "自动回复命中空回复规则，不发送", "reply_source", res.Source)
+		return nil
+	}
+	// started 是投递开始时刻，用于输出一条消息一行的回复决策摘要耗时。
+	started := time.Now()
+	// err 是本次回复投递失败的原因，非空时不输出成功摘要。
+	if err := r.deliver(ctx, m, res); err != nil {
+		return err
+	}
+	r.logger.InfoContext(ctx, "自动回复已发送", "reply_source", res.Source, "duration", time.Since(started).Round(time.Millisecond))
+	return nil
+}
+
+// handleItemGreeting 在会话首条命中商品规则的消息上发送一次商品首次回复。
+// 规则、记录读取或发送失败都只记录日志；一次性记录保证每个会话最多触发一次。
+func (r *ReplyService) handleItemGreeting(ctx context.Context, m ChatMessage) {
+	if m.ItemID == "" || m.ChatID == "" || r.delivery == nil || r.store == nil || r.store.ItemGreetings == nil {
+		return
+	}
+	// rule、err 保存覆盖当前商品的已启用规则；未配置时直接返回。
+	rule, err := r.store.ItemGreetings.FindEnabledForItem(ctx, r.cookieID, m.ItemID)
+	if errors.Is(err, db.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		r.logger.ErrorContext(ctx, "读取商品首次回复规则失败", "err", err)
+		return
+	}
+	// res 保存首次回复内容，使用商品首次回复专属的一次性记录。
+	res := &ReplyResult{Source: "商品首次回复", ReplyOnce: true, onceRecords: r.store.ItemGreetings}
+	if strings.TrimSpace(rule.ReplyContent) != "" {
+		res.Text = formatReplyWithItem(rule.ReplyContent, m)
+	}
+	if strings.TrimSpace(rule.ReplyImageURL) != "" {
+		res.ImageURL = rule.ReplyImageURL
+	}
+	res.LibraryImageID = rule.ReplyLibraryImageID
+	if res.Text == "" && res.ImageURL == "" && res.LibraryImageID == 0 {
+		return
+	}
+	// deliverErr 保存首次回复投递错误，仅记录日志不阻断后续回复。
+	if deliverErr := r.deliver(ctx, m, res); deliverErr != nil {
+		r.logger.ErrorContext(ctx, "商品首次回复发送失败", "err", deliverErr)
+	}
+}
+
+// deliver 发送一条已解析的回复：图片优先，文本随后。ReplyOnce 回复使用持久化分段状态，
+// 失败时只重试尚未成功的部分。
+func (r *ReplyService) deliver(ctx context.Context, m ChatMessage, res *ReplyResult) error {
 	if r.delivery == nil {
 		return nil
 	}
@@ -136,9 +219,9 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 		var claimed bool
 		// err 用于本次流程后续判断的err
 		var err error
-		record, claimed, err = r.store.DefaultReps.ClaimRecord(ctx, r.cookieID, m.ChatID, res.Text != "", res.ImageURL != "")
+		record, claimed, err = r.records(res).ClaimRecord(ctx, r.cookieID, m.ChatID, res.Text != "", res.hasImage())
 		if err != nil {
-			return fmt.Errorf("领取默认回复发送任务: %w", err)
+			return fmt.Errorf("领取%s回复发送任务: %w", res.Source, err)
 		}
 		if !claimed {
 			return nil
@@ -147,37 +230,46 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 	return r.handleWithDelivery(ctx, m, res, record)
 }
 
+// records 返回回复使用的一次性投递记录仓储；未指定时为账号默认回复记录。
+func (r *ReplyService) records(res *ReplyResult) onceRecordStore {
+	if res.onceRecords != nil {
+		return res.onceRecords
+	}
+	return r.store.DefaultReps
+}
+
 // handleWithDelivery 把完整回复交给聊天应用，并把其分段结果同步到 reply_once 状态。
 func (r *ReplyService) handleWithDelivery(ctx context.Context, m ChatMessage, res *ReplyResult, record db.DefaultReplyRecord) error {
 	// message 保存本次仍需发送的完整回复；已成功的 reply_once 分段会被剔除。
-	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL}
+	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL, LibraryImageID: res.LibraryImageID}
 	if record.ImageSent {
 		message.ImageURL = ""
+		message.LibraryImageID = 0
 	}
 	if record.TextSent {
 		message.Text = ""
 	}
-	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" {
+	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" && message.LibraryImageID == 0 {
 		return nil
 	}
 	// sent、sendErr 保存消息页面完整发送入口返回的分段确认和错误。
 	sent, sendErr := r.delivery.SendReply(ctx, message)
 	if sent.ImageSent && !record.ImageSent && res.ReplyOnce && m.ChatID != "" {
 		// markErr 保存图片分段状态持久化结果。
-		if markErr := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "image"); markErr != nil {
+		if markErr := r.records(res).MarkPartSent(ctx, r.cookieID, m.ChatID, "image"); markErr != nil {
 			r.markReplyUncertain(ctx, res, m, markErr)
 			return markErr
 		}
 	}
 	if sent.TextSent && !record.TextSent && res.ReplyOnce && m.ChatID != "" {
 		// markErr 保存文字分段状态持久化结果。
-		if markErr := r.store.DefaultReps.MarkPartSent(ctx, r.cookieID, m.ChatID, "text"); markErr != nil {
+		if markErr := r.records(res).MarkPartSent(ctx, r.cookieID, m.ChatID, "text"); markErr != nil {
 			r.markReplyUncertain(ctx, res, m, markErr)
 			return markErr
 		}
 	}
 	if sendErr != nil {
-		r.logger.Error("通过聊天应用发送回复失败", "err", sendErr)
+		r.logger.ErrorContext(ctx, "通过聊天应用发送回复失败", "err", sendErr)
 		if sent.Uncertain {
 			r.markReplyUncertain(ctx, res, m, sendErr)
 			return sendErr
@@ -200,7 +292,7 @@ func (r *ReplyService) handleWithDelivery(ctx context.Context, m ChatMessage, re
 	}
 	if res.ReplyOnce && m.ChatID != "" {
 		// recordErr 保存完整回复记录收口结果。
-		if recordErr := r.store.DefaultReps.MarkRecordSent(ctx, r.cookieID, m.ChatID); recordErr != nil {
+		if recordErr := r.records(res).MarkRecordSent(ctx, r.cookieID, m.ChatID); recordErr != nil {
 			r.markReplyUncertain(ctx, res, m, recordErr)
 			return recordErr
 		}
@@ -221,7 +313,7 @@ func (r *ReplyService) markReplyFailure(ctx context.Context, res *ReplyResult, m
 		persistCtx, cancel := context.WithTimeout(context.Background(), replyRecordPersistTimeout)
 		defer cancel()
 		// persistErr 保存确定未发送状态写入结果。
-		if persistErr := r.store.DefaultReps.MarkRecordFailed(persistCtx, r.cookieID, m.ChatID, sendErr.Error()); persistErr != nil {
+		if persistErr := r.records(res).MarkRecordFailed(persistCtx, r.cookieID, m.ChatID, sendErr.Error()); persistErr != nil {
 			return fmt.Errorf("保存默认回复失败状态: %w", persistErr)
 		}
 	}
@@ -235,19 +327,30 @@ func (r *ReplyService) markReplyUncertain(ctx context.Context, res *ReplyResult,
 		persistCtx, cancel := context.WithTimeout(context.Background(), replyRecordPersistTimeout)
 		defer cancel()
 		// persistErr 保存未知投递结果隔离失败，便于运维发现无法持久化的人工核对状态。
-		if persistErr := r.store.DefaultReps.MarkRecordUncertain(persistCtx, r.cookieID, m.ChatID, cause.Error()); persistErr != nil {
-			r.logger.Error("隔离未知默认回复结果失败", "err", persistErr)
+		if persistErr := r.records(res).MarkRecordUncertain(persistCtx, r.cookieID, m.ChatID, cause.Error()); persistErr != nil {
+			r.logger.ErrorContext(ctx, "隔离未知默认回复结果失败", "err", persistErr)
 		}
 	}
 }
 
 // resolve 按优先级确定回复内容（不发送）。
 func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult {
+	// pause 描述当前会话是否处于人工接管窗口；Handle 已查询时直接从 Context 复用。
+	pause, ok := ctx.Value(manualPauseContextKey{}).(manualPauseSnapshot)
+	if !ok {
+		pause = r.manualPauseState(ctx, m.ChatID)
+	}
+	// 整段静默：人工接管时连关键词和默认回复也不发，避免和人工抢话。
+	if pause.Active && !pause.AIOnly {
+		r.logger.InfoContext(ctx, "会话处于人工接管窗口，跳过全部自动回复", "chat_id", m.ChatID)
+		return nil
+	}
+
 	// 优先级1：API 回复。
 	if r.api != nil {
 		if // res、err 用于本次流程后续判断的res、err
 		res, err := r.api.Reply(ctx, m); err != nil {
-			r.logger.Error("API 回复失败", "err", err)
+			r.logger.ErrorContext(ctx, "API 回复失败", "err", err)
 		} else if res != nil {
 			res.Source = "API"
 			return res
@@ -259,19 +362,46 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 		return res
 	}
 
-	// 优先级3：AI 回复。
-	if r.ai != nil {
+	// 优先级3：AI 回复；人工接管且只暂停 AI 时跳过。
+	if r.ai != nil && !(pause.Active && pause.AIOnly) {
 		if // res、err 用于本次流程后续判断的res、err
 		res, err := r.ai.Reply(ctx, m); err != nil {
-			r.logger.Error("AI 回复失败", "err", err)
+			r.logger.ErrorContext(ctx, "AI 回复失败", "err", err)
 		} else if res != nil {
 			res.Source = "AI"
 			return res
 		}
 	}
+	if pause.Active && pause.AIOnly {
+		r.logger.InfoContext(ctx, "会话处于人工接管窗口，跳过 AI 回复", "chat_id", m.ChatID)
+	}
 
 	// 优先级4：默认回复。
 	return r.defaultReply(ctx, m)
+}
+
+// manualPauseContextKey 用于在同一次回复流程内传递已经查询过的人工接管状态。
+type manualPauseContextKey struct{}
+
+// manualPauseSnapshot 是会话人工接管状态的只读快照。
+type manualPauseSnapshot struct {
+	// Active 表示会话是否处于暂停窗口内。
+	Active bool
+	// AIOnly 表示只暂停 AI 回复；为 false 时整条自动回复链都跳过。
+	AIOnly bool
+}
+
+// manualPauseState 读取会话的人工接管状态；存储不可用或读取失败时按未暂停处理。
+func (r *ReplyService) manualPauseState(ctx context.Context, chatID string) manualPauseSnapshot {
+	if r.store == nil || r.store.AIManualPauses == nil || chatID == "" {
+		return manualPauseSnapshot{}
+	}
+	pause, err := r.store.AIManualPauses.Active(ctx, r.cookieID, chatID)
+	if err != nil {
+		r.logger.WarnContext(ctx, "读取人工接管状态失败", "err", err, "chat_id", chatID)
+		return manualPauseSnapshot{}
+	}
+	return manualPauseSnapshot{Active: pause.Active, AIOnly: pause.AIOnly}
 }
 
 // keywordReply 关键词匹配。返回 nil 表示无匹配；
@@ -279,30 +409,118 @@ func (r *ReplyService) resolve(ctx context.Context, m ChatMessage) *ReplyResult 
 // 移植自 get_keyword_reply：商品ID关键词优先 → 通用关键词。
 // keywordReply 封装关键词回复业务协调。
 func (r *ReplyService) keywordReply(ctx context.Context, m ChatMessage) *ReplyResult {
-	// kws、err 用于本次流程后续判断的kws、err
+	// kws、err 保存当前账号的关键词规则及数据库读取错误。
 	kws, err := r.store.Keywords.AllWithType(ctx, r.cookieID)
 	if err != nil || len(kws) == 0 {
 		return nil
 	}
-	// msgLower 用于本次流程后续判断的msgLower
-	msgLower := strings.ToLower(m.Text)
 
-	// 1. 商品ID关键词优先；一条规则可关联多个商品，命中任一即可。
+	// 1. 商品ID关键词优先；一条规则可关联多个商品，且关键词中的任一候选词命中即可。
 	if m.ItemID != "" {
-		// kw 表示当前遍历过程中的kw
+		// kw 表示当前遍历过程中的关键词规则。
 		for _, kw := range kws {
-			if containsItemID(kw.ItemID, m.ItemID) && strings.Contains(msgLower, strings.ToLower(kw.Keyword)) {
+			if containsItemID(kw.ItemID, m.ItemID) && r.keywordMatches(kw, m.Text) {
 				return r.keywordResult(kw, m)
 			}
 		}
 	}
 	// 2. 通用关键词（无 item_id）。
+	// kw 表示当前遍历过程中的账号级关键词规则。
 	for _, kw := range kws {
-		if kw.ItemID == "" && strings.Contains(msgLower, strings.ToLower(kw.Keyword)) {
+		if kw.ItemID == "" && r.keywordMatches(kw, m.Text) {
 			return r.keywordResult(kw, m)
 		}
 	}
 	return nil
+}
+
+// keywordMatches 判断一条规则的多个表达式是否命中消息文本。
+// contains 模式保持历史大小写不敏感的字面包含语义；regexp 模式使用 Go/RE2，
+// 单个遗留非法表达式只记录并跳过，不影响同一规则的其他表达式或后续降级。
+func (r *ReplyService) keywordMatches(kw db.Keyword, text string) bool {
+	// expressions 保存兼容数据库行转换出的匹配表达式集合。
+	expressions := kw.Expressions
+	if len(expressions) == 0 && strings.TrimSpace(kw.Keyword) != "" {
+		expressions = []string{kw.Keyword}
+	}
+	// matched、invalidIndexes、unknownMode 保存纯匹配结果和需要对外记录的稳定诊断。
+	matched, invalidIndexes, unknownMode := matchKeywordExpressions(expressions, kw.MatchType, text)
+	// logger 保存带账号上下文的诊断日志端口；正常构造路径总会提供该端口。
+	logger := r.logger
+	if logger == nil {
+		logger = slog.Default().With("account", r.cookieID, "subsys", "reply")
+	}
+	// expressionIndex 表示发生编译失败的表达式零基位置。
+	for _, expressionIndex := range invalidIndexes {
+		// errorType 只记录稳定的诊断类别，避免把表达式正文和底层编译文本写入日志。
+		errorType := "regexp_compile"
+		logger.Warn("关键词正则编译失败，已跳过", "expression_index", expressionIndex, "error_type", errorType)
+	}
+	if unknownMode {
+		// errorType 只标识未知匹配模式，不记录调用方传入的原始模式文本。
+		errorType := "unknown_match_type"
+		logger.Warn("关键词匹配模式未知，已跳过", "error_type", errorType)
+	}
+	return matched
+}
+
+// matchKeywordExpressions 对表达式集合执行无副作用的 OR 匹配。
+// expressions 是规则表达式，matchType 是规范或历史匹配模式，text 是待匹配消息；返回命中结果、非法正则的零基位置和未知模式标记。
+func matchKeywordExpressions(expressions []string, matchType, text string) (bool, []int, bool) {
+	// normalizedMatchType 保存兼容历史模式后的匹配模式。
+	normalizedMatchType := strings.ToLower(strings.TrimSpace(matchType))
+	if normalizedMatchType == "" || normalizedMatchType == "fuzzy" || normalizedMatchType == "exact" {
+		normalizedMatchType = "contains"
+	}
+	if normalizedMatchType != "contains" && normalizedMatchType != "regexp" {
+		return false, nil, true
+	}
+	// invalidIndexes 保存编译失败但不阻断同规则其他表达式的零基位置。
+	invalidIndexes := make([]int, 0)
+	// expressionIndex、rawExpression 表示当前遍历的表达式位置和原始文本。
+	for expressionIndex, rawExpression := range expressions {
+		// expression 是去除边界空白后的匹配表达式。
+		expression := strings.TrimSpace(rawExpression)
+		if expression == "" {
+			continue
+		}
+		if normalizedMatchType == "regexp" {
+			// compiled、compileErr 保存与保存时校验共用的默认忽略大小写正则及编译错误，已编译结果带缓存。
+			compiled, compileErr := keywordmatch.CompileExpression(expression)
+			if compileErr != nil {
+				invalidIndexes = append(invalidIndexes, expressionIndex)
+				continue
+			}
+			if compiled.MatchString(text) {
+				return true, invalidIndexes, false
+			}
+			continue
+		}
+		if keywordMatches(strings.ToLower(text), expression) {
+			return true, invalidIndexes, false
+		}
+	}
+	return false, invalidIndexes, false
+}
+
+// keywordMatches 判断已小写化的买家消息 messageLower 是否包含 contains 模式表达式 rawKeyword 中的任一候选词。
+// 表达式可使用 |、中英文逗号、顿号或换行分隔候选词；空片段会被忽略，以保持历史单关键词规则不变。
+// regexp 模式不经过此函数：其中的 | 是正则分支，不做拆分。
+func keywordMatches(messageLower, rawKeyword string) bool {
+	// term 表示由规则分隔符拆出的单个候选关键词。
+	for _, term := range strings.FieldsFunc(rawKeyword, isKeywordTermSeparator) {
+		// normalizedTerm 去除候选词首尾空白后参与不区分大小写的包含匹配。
+		normalizedTerm := strings.TrimSpace(term)
+		if normalizedTerm != "" && strings.Contains(messageLower, strings.ToLower(normalizedTerm)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isKeywordTermSeparator 判断字符 separator 是否是关键词规则中表达 OR 语义的分隔符。
+func isKeywordTermSeparator(separator rune) bool {
+	return separator == '|' || separator == ',' || separator == '，' || separator == '、' || separator == '\n' || separator == '\r'
 }
 
 // containsItemID 判断规则的商品范围字段是否覆盖目标商品标识。
@@ -320,8 +538,8 @@ func containsItemID(rawItemIDs string, target string) bool {
 
 // keywordResult 封装关键词结果业务协调。
 func (r *ReplyService) keywordResult(kw db.Keyword, m ChatMessage) *ReplyResult {
-	if kw.Type == "image" && kw.ImageURL != "" {
-		return &ReplyResult{ImageURL: kw.ImageURL, Source: "关键词"}
+	if kw.Type == "image" && (kw.ImageURL != "" || kw.LibraryImageID > 0) {
+		return &ReplyResult{ImageURL: kw.ImageURL, LibraryImageID: kw.LibraryImageID, Source: "关键词"}
 	}
 	if strings.TrimSpace(kw.Reply) == "" {
 		return &ReplyResult{Skip: true, Source: "关键词"} // EMPTY_REPLY
@@ -346,10 +564,15 @@ func (r *ReplyService) defaultReply(ctx context.Context, m ChatMessage) *ReplyRe
 		return nil
 	}
 	// 文字和图片都为空 → 空回复标记。
-	if strings.TrimSpace(dr.ReplyContent) == "" && strings.TrimSpace(dr.ReplyImageURL) == "" {
+	if strings.TrimSpace(dr.ReplyContent) == "" && strings.TrimSpace(dr.ReplyImageURL) == "" && dr.ReplyLibraryImageID == 0 {
 		return &ReplyResult{Skip: true, Source: "默认"}
 	}
 	// res 用于本次流程后续判断的响应
+	// 商品首次回复已触发的会话不再发送账号级“仅回复一次”的默认回复，商品级覆盖账号级。
+	if dr.ReplyOnce && r.itemGreetingTriggered(ctx, m) {
+		return nil
+	}
+	// res 保存账号默认回复的待发送内容及一次性投递标记。
 	res := &ReplyResult{Source: "默认", ReplyOnce: dr.ReplyOnce}
 	if strings.TrimSpace(dr.ReplyContent) != "" {
 		res.Text = formatReply(dr.ReplyContent, m)
@@ -357,7 +580,22 @@ func (r *ReplyService) defaultReply(ctx context.Context, m ChatMessage) *ReplyRe
 	if strings.TrimSpace(dr.ReplyImageURL) != "" {
 		res.ImageURL = dr.ReplyImageURL
 	}
+	res.LibraryImageID = dr.ReplyLibraryImageID
 	return res
+}
+
+// itemGreetingTriggered 判断当前会话是否已有商品首次回复记录；读取失败时按未触发处理，保持默认回复可用。
+func (r *ReplyService) itemGreetingTriggered(ctx context.Context, m ChatMessage) bool {
+	if m.ChatID == "" || r.store.ItemGreetings == nil {
+		return false
+	}
+	// triggered、err 保存会话是否已触发商品首次回复及读取错误。
+	triggered, err := r.store.ItemGreetings.HasRecord(ctx, r.cookieID, m.ChatID)
+	if err != nil {
+		r.logger.ErrorContext(ctx, "读取商品首次回复记录失败", "err", err)
+		return false
+	}
+	return triggered
 }
 
 // formatReply 变量替换：{send_user_name} {send_user_id} {send_message}。

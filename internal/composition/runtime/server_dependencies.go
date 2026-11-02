@@ -206,7 +206,7 @@ func ServerDependencies(services *composition.Services, base HTTPDependencies, s
 			ItemSinglePublish: ports.ItemSinglePublish, ItemBatchPreview: ports.ItemBatchPreview,
 			ItemBatchManagement: ports.ItemBatchManagement, ItemCategoryRecommendation: ports.ItemCategoryRecommendation,
 			ItemBatchPreviewPersistence: ports.ItemBatchPreviewPersistence, ItemBatchLocalPublish: ports.ItemBatchLocalPublish,
-			ItemSync: ports.ItemSync, ItemCatalog: ports.ItemCatalog, ItemCatalogMutation: ports.ItemCatalogMutation,
+			ItemSync: ports.ItemSync, ItemCatalog: ports.ItemCatalog, ItemCatalogMutation: ports.ItemCatalogMutation, ItemAISettings: ports.ItemAISettings,
 			AccountLogin:        accountLoginTransport{service: ports.AccountLogin},
 			QRLogin:             qrLoginTransport{service: ports.QRLogin},
 			SessionRecovery:     sessionRecoveryTransport{handler: sessionRecovery},
@@ -215,9 +215,9 @@ func ServerDependencies(services *composition.Services, base HTTPDependencies, s
 			AccountLongLogin: ports.AccountLongLogin, AccountSettings: ports.AccountSettings, AccountRuntime: ports.AccountRuntime,
 			AccountSummaries: ports.AccountSummaries, AccountTasks: ports.AccountTasks, Chat: ports.Chat,
 			UncertainNotifications: ports.UncertainNotifications, NotificationChannels: ports.NotificationChannels,
-			Analytics: ports.Analytics, AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules, DeliveryTemplates: ports.DeliveryTemplates,
-			Cards: ports.Cards, APIRequestTester: ports.APICardTester, PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies,
-			Keywords: ports.Keywords, Settings: ports.Settings, Admin: ports.Admin,
+			Analytics: ports.Analytics, AutomationIssues: ports.AutomationIssues, AutomationAudit: ports.AutomationAudit, AutomationRules: ports.AutomationRules, DeliveryTemplates: ports.DeliveryTemplates,
+			Cards: ports.Cards, APIRequestTester: ports.APICardTester, PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, ItemGreetings: ports.ItemGreetings, Library: ports.Library,
+			Keywords: ports.Keywords, Settings: ports.Settings, Admin: ports.Admin, RuntimeLogs: ports.RuntimeLogs,
 		}),
 	}, nil
 }

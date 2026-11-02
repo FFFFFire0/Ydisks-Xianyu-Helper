@@ -21,6 +21,7 @@ import (
 	cardsapp "xianyu-go/internal/application/cards"
 	"xianyu-go/internal/automation"
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/logsafe"
 	"xianyu-go/internal/netguard"
 )
 
@@ -254,7 +255,12 @@ func (c *apiDeliveryClient) Fetch(ctx context.Context, request automation.APICar
 	// attempts 是本次请求允许执行的总次数；未开启重试时固定为一次。
 	attempts := 1
 	if config.RetryEnabled {
-		attempts = apiDeliveryRetryLimit
+		// 只有幂等键真正出现在出站请求中，重试才不会把同一份卡密重复下发。
+		if apiDeliveryCarriesIdempotencyKey(config.Method, headers, params, body, idempotencyKey) {
+			attempts = apiDeliveryRetryLimit
+		} else if c.logger != nil {
+			c.logger.Warn("API 卡启用了幂等重试但本次请求未携带幂等键，已降级为单次请求", "method", config.Method, "card_id", request.CardID, "action_id", request.ActionID)
+		}
 	}
 	// attempt 表示当前已执行的请求次数，最多不超过配置允许的总次数。
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -314,17 +320,29 @@ func (c *apiDeliveryClient) doAPIRequest(ctx context.Context, config cardsapp.AP
 	}
 	// response、err 保存远端响应及网络调用错误。
 	client := c.httpClient()
+	// started 是请求发出时刻；host 只记录目标主机，不记录路径、查询和正文，避免第三方密钥进入日志。
+	started := time.Now()
+	// host 是远端 API 的主机，仅用于日志定位目标服务。
+	host := request.URL.Host
 	// response、err 保存远端响应及网络调用错误。
 	response, err := client.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {
 			return automation.APICardResult{}, ctx.Err()
 		}
+		if c.logger != nil {
+			c.logger.WarnContext(ctx, "API 卡发货请求网络失败", "host", host, "method", config.Method, "attempt", attempt, "duration", time.Since(started).Round(time.Millisecond), "err", logsafe.ExternalError(err))
+		}
 		return automation.APICardResult{Dispatched: true}, &apiDeliveryRetryableError{kind: "network", err: err}
 	}
 	defer response.Body.Close()
 	if c.logger != nil {
-		c.logger.Info("API 卡发货请求完成", "method", config.Method, "attempt", attempt, "status", response.StatusCode)
+		// level 在远端返回非 2xx 时提升为 Warn，便于从日志直接发现第三方接口异常。
+		level := slog.LevelInfo
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			level = slog.LevelWarn
+		}
+		c.logger.Log(ctx, level, "API 卡发货请求完成", "host", host, "method", config.Method, "attempt", attempt, "status", response.StatusCode, "duration", time.Since(started).Round(time.Millisecond))
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		// readErr 保存受限读取暂时性错误，不读取响应正文到日志。
@@ -624,6 +642,52 @@ func apiJSONScalar(value any) string {
 		}
 		return string(encoded)
 	}
+}
+
+// apiDeliveryCarriesIdempotencyKey 判断本次真实出站请求是否携带已生成的幂等键，用于决定是否允许重试。
+// 判定必须与实际发送逻辑一致：请求头必定发送；GET 的参数进入查询串；POST 只发送正文，
+// 而正文为空时 Fetch 已把参数回退成正文，因此这里直接检查编码后的出站正文。
+func apiDeliveryCarriesIdempotencyKey(method string, headers, params map[string]any, body []byte, idempotencyKey string) bool {
+	if idempotencyKey == "" {
+		return false
+	}
+	if apiJSONValuesContainText(headers, idempotencyKey) {
+		return true
+	}
+	if method == http.MethodGet {
+		return apiJSONValuesContainText(params, idempotencyKey)
+	}
+	return bytes.Contains(body, []byte(idempotencyKey))
+}
+
+// apiJSONValuesContainText 递归判断请求头或查询参数的值中是否包含指定文本，键名不参与判断。
+func apiJSONValuesContainText(values map[string]any, expected string) bool {
+	// value 是当前模板字段的待检查值。
+	for _, value := range values {
+		if apiJSONValueContainsText(value, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+// apiJSONValueContainsText 递归判断单个模板值是否包含指定文本；只有字符串及其嵌套内容可能承载占位符。
+func apiJSONValueContainsText(value any, expected string) bool {
+	// current 保存当前递归节点的动态 JSON 值。
+	switch current := value.(type) {
+	case string:
+		return strings.Contains(current, expected)
+	case map[string]any:
+		return apiJSONValuesContainText(current, expected)
+	case []any:
+		// child 表示数组中的当前递归节点。
+		for _, child := range current {
+			if apiJSONValueContainsText(child, expected) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // apiDeliveryIdempotencyKey 生成跨进程稳定且不暴露订单内容的幂等键。

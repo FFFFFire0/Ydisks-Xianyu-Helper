@@ -31,6 +31,22 @@ func (d *ItemDependencies) NewItemBatchRepository() *ItemBatchRepository {
 	return NewItemBatchRepository(d.store)
 }
 
+// NewLibraryImageRepository 创建资源库图片元数据适配器。
+func (d *ItemDependencies) NewLibraryImageRepository() *LibraryImageRepository {
+	if d == nil {
+		return nil
+	}
+	return NewLibraryImageRepository(d.store)
+}
+
+// NewLibraryTemplateRepository 创建商品模板适配器。
+func (d *ItemDependencies) NewLibraryTemplateRepository() *LibraryTemplateRepository {
+	if d == nil {
+		return nil
+	}
+	return NewLibraryTemplateRepository(d.store)
+}
+
 // NewItemBatchPreviewPort 创建批量预检所需的归属和本地文件端口。
 func (d *ItemDependencies) NewItemBatchPreviewPort() *ItemBatchPreviewPort {
 	if d == nil {
@@ -69,6 +85,14 @@ func (d *ItemDependencies) NewItemCatalogRepository() *ItemCatalogRepository {
 		return nil
 	}
 	return NewItemCatalogRepository(d.store)
+}
+
+// NewItemAISettingsRepository 创建商品级 AI 配置仓储。
+func (d *ItemDependencies) NewItemAISettingsRepository() *ItemAISettingsRepository {
+	if d == nil {
+		return nil
+	}
+	return NewItemAISettingsRepository(d)
 }
 
 // NewItemSyncRepository 创建商品同步端口，并接收平台会话回调。

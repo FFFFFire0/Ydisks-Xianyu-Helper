@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"xianyu-go/internal/logging"
 	"xianyu-go/internal/xianyu/mtop"
 	"xianyu-go/internal/xianyu/ws"
 )
@@ -32,6 +34,8 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 	}
 	// ctx、cancel 保存当前 Run 派生的可取消运行上下文及其取消函数。
 	ctx, cancel := context.WithCancel(parent)
+	// 账号标识挂到运行 ctx：Token 获取、续期等下游 MTOP/WS 日志无需逐处传参即可按账号检索。
+	ctx = logging.With(ctx, slog.String("account", a.CookieID))
 	defer func() {
 		cancel()
 		// shutdownCtx、shutdownCancel 提供独立于 parent 取消状态的有限 Join 预算；
@@ -72,7 +76,7 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 			}
 			a.logger.Error("WS 握手失败", "err", err)
 			// retryErr 保存握手失败处理后的终止错误；非 nil 时连接循环必须退出。
-			if retryErr := a.handleWSConnectFailure(ctx, err); retryErr != nil {
+			if retryErr := c.handleWSOpenFailure(ctx, err); retryErr != nil {
 				return retryErr
 			}
 			continue
@@ -124,7 +128,7 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 			}
 			a.logger.Error("WS 注册失败", "err", err)
 			// retryErr 保存注册失败处理后的终止错误；非 nil 时连接循环必须退出。
-			if retryErr := a.handleWSConnectFailure(ctx, err); retryErr != nil {
+			if retryErr := c.handleWSOpenFailure(ctx, err); retryErr != nil {
 				return retryErr
 			}
 			continue
@@ -202,6 +206,30 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 	}
 }
 
+// handleWSOpenFailure 处理拨号或 /reg 阶段的失败：服务端明确的 RegError（Token 无效、鉴权失败、会话被移除）
+// 仍交给 handleWSConnectFailure 终止账号；其余错误只可能是网络类瞬时故障，按递增退避重试，
+// 不判为凭证失效。ctx 取消时返回其错误；返回 nil 表示调用方应继续下一轮连接。
+func (c *connectionCoordinator) handleWSOpenFailure(ctx context.Context, openErr error) error {
+	// a 是协调器拥有的账号 facade。
+	a := c.account
+	// regErr 保存 openErr 链中的服务端 /reg 拒绝；非 nil 说明凭证或会话被平台明确拒绝。
+	var regErr *ws.RegError
+	if errors.As(openErr, &regErr) {
+		return a.handleWSConnectFailure(ctx, openErr)
+	}
+	a.clearConnectionToken(ctx)
+	a.runtimeMu.Lock()
+	a.connFailures++
+	// failures 是含本次在内的连续失败次数，仅在第 3 次时发一次离线通知。
+	failures := a.connFailures
+	a.runtimeMu.Unlock()
+	a.setRuntimeState(RuntimeReconnecting, "消息服务连接失败，正在自动重试")
+	if failures == 3 {
+		a.notifyDialRetrying(ctx, errString(openErr))
+	}
+	return sleepCtx(ctx, a.dialRetryDelay())
+}
+
 // prepareRun 建立账号生命周期、记录 worker 并执行首次 API 续期；返回 false 表示账号已禁用。
 func (c *connectionCoordinator) prepareRun(ctx context.Context, cancel context.CancelFunc) (bool, error) {
 	// a 是当前连接协调器绑定的账号 facade；生命周期只能在它完整构造后开始。
@@ -273,7 +301,7 @@ func (c *connectionCoordinator) handleTokenAcquisitionFailure(ctx context.Contex
 	a.setRuntimeError(ctx, tokenErr)
 	if mtop.IsRiskVerificationErr(tokenErr) {
 		a.logger.Warn("闲鱼要求安全验证，停止本次消息登录", "err", tokenErr)
-		a.alertEvent(ctx, EventSecurityVerification, AlertLevelWarn, "闲鱼要求安全验证", "账号触发闲鱼风控验证（滑块/人脸等），需要重新登录或完成人工验证。")
+		a.alertEvent(ctx, EventSecurityVerification, AlertLevelWarn, "闲鱼要求安全验证", "账号触发闲鱼风控验证（滑块/人脸等），重新扫码无效；请在网页版闲鱼通过风控后，复制 token 请求里的 Cookie 粘贴到账号设置。")
 		return false, tokenErr
 	}
 	if mtop.IsSessionExpiredErr(tokenErr) {
@@ -296,7 +324,7 @@ func (c *connectionCoordinator) handleTokenAcquisitionFailure(ctx context.Contex
 		return false, tokenErr
 	}
 	a.setRuntimeState(RuntimeReconnecting, "获取消息凭证失败，正在重试")
-	a.notifyOffline(ctx, "获取消息凭证失败，正在自动重试："+errString(tokenErr))
+	a.notifyDialRetrying(ctx, "获取消息凭证失败，正在自动重试："+errString(tokenErr))
 	// sleepErr 保存退避等待被取消或超时的原因；该错误必须终止当前账号运行循环。
 	if sleepErr := sleepCtx(ctx, a.tokenRetryDelay()); sleepErr != nil {
 		return false, sleepErr

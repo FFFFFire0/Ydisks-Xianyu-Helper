@@ -174,6 +174,54 @@ func TestCardsRepositoryDataMetadataPreservesConsumedStock(t *testing.T) {
 	}
 }
 
+// TestCardsRepositoryUpdateIfDataUnchangedRejectsStaleStock 验证库存快照守卫：编辑期间被自动发货消费后，旧快照不得把已发出的卡密写回库存。
+func TestCardsRepositoryUpdateIfDataUnchangedRejectsStaleStock(t *testing.T) {
+	// store、cleanup 管理隔离数据库及关闭责任。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是本地 SQLite 读写使用的上下文。
+	ctx := context.Background()
+	// owner、ownerErr 保存测试卡券所属用户。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// repository 是待测卡券数据库适配器。
+	repository := NewCardsRepository(store)
+	// cardID、createErr 保存编辑者打开弹窗时库存为 A、B 的 data 卡券。
+	cardID, createErr := repository.Create(ctx, cardsapp.Card{Name: "库存", Type: "data", DataContent: "A\nB", Enabled: true, UserID: owner.ID})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// consumed、consumeErr 模拟编辑期间自动发货先发出 A。
+	consumed, consumeErr := store.Cards.ConsumeBatchData(ctx, cardID)
+	if consumeErr != nil || consumed != "A" {
+		t.Fatalf("消费库存失败 consumed=%q err=%v", consumed, consumeErr)
+	}
+	// edited 是编辑者基于旧快照追加 C 后的完整草稿。
+	edited := cardsapp.Card{ID: cardID, Name: "库存", Type: "data", DataContent: "A\nB\nC", Enabled: true, UserID: owner.ID}
+	// staleUpdated、staleErr 保存旧快照守卫更新结果，必须拒绝写入。
+	staleUpdated, staleErr := repository.UpdateIfDataUnchanged(ctx, edited, "A\nB")
+	if staleErr != nil || staleUpdated {
+		t.Fatalf("旧库存快照不应覆盖 updated=%v err=%v", staleUpdated, staleErr)
+	}
+	// current、currentErr 验证被拒绝后库存仍是自动发货后的剩余行。
+	current, currentErr := repository.GetFull(ctx, cardID)
+	if currentErr != nil || current.DataContent != "B" {
+		t.Fatalf("拒绝写入后库存被改动 current=%+v err=%v", current, currentErr)
+	}
+	// freshUpdated、freshErr 保存基于最新快照重新编辑后的写入结果，应成功。
+	freshUpdated, freshErr := repository.UpdateIfDataUnchanged(ctx, cardsapp.Card{ID: cardID, Name: "库存", Type: "data", DataContent: "B\nC", Enabled: true, UserID: owner.ID}, "B")
+	if freshErr != nil || !freshUpdated {
+		t.Fatalf("最新快照应允许写入 updated=%v err=%v", freshUpdated, freshErr)
+	}
+	// saved、savedErr 验证最新快照写入后的库存正文。
+	saved, savedErr := repository.GetFull(ctx, cardID)
+	if savedErr != nil || saved.DataContent != "B\nC" {
+		t.Fatalf("库存未按最新快照写入 saved=%+v err=%v", saved, savedErr)
+	}
+}
+
 // TestCardsRepositoryPropagatesInfrastructureErrors 验证数据库不可用时不会伪装成卡券缺失。
 func TestCardsRepositoryPropagatesInfrastructureErrors(t *testing.T) {
 	// store 是随后主动关闭数据库连接的测试存储。
@@ -258,5 +306,69 @@ func TestCardApplicationModelCopiesAPIConfigSummary(t *testing.T) {
 	summary.URL = "changed-after-conversion"
 	if converted.APIConfigSummary.URL == summary.URL {
 		t.Fatal("应用模型不应共享数据库摘要字段")
+	}
+}
+
+// TestCardsRepositorySaleRecordMapping 验证售出台账查询把数据库字段完整映射为应用模型，并保持分页和用户隔离。
+func TestCardsRepositorySaleRecordMapping(t *testing.T) {
+	// store 是使用临时 SQLite 数据库的测试存储。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// repository 是被测服务依赖的内存仓储替身。
+	repository := NewCardsRepository(store)
+	// ctx 是测试使用的根上下文。
+	ctx := context.Background()
+	// owner 是卡密组所有者；ownerErr 保存读取卡密组所有者的错误。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// cardID 是被测卡密组标识；createErr 保存创建测试数据的错误。
+	cardID, createErr := repository.Create(ctx, cardsapp.Card{Name: "台账卡", Type: "data", DataContent: "A\nB", Enabled: true, UserID: owner.ID})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// meta 是消费时的订单上下文。
+	meta := db.CardSaleMeta{RunID: 3, CookieID: "acc1", OrderID: "o1", ItemID: "i1", BuyerID: "b1"}
+	// recordID 是 reserved 台账记录标识；reserveErr 保存扣减库存并记账的错误。
+	_, recordID, reserveErr := store.Cards.ReserveBatchData(ctx, cardID, meta)
+	if reserveErr != nil {
+		t.Fatal(reserveErr)
+	}
+	// markErr 保存确认售出的错误。
+	if markErr := store.Cards.MarkSaleRecordsSold(ctx, recordID); markErr != nil {
+		t.Fatal(markErr)
+	}
+
+	// countErr 保存统计已售数量的错误；counts 保存按卡密组统计的已售数量。
+	counts, countErr := repository.SaleCounts(ctx, owner.ID)
+	if countErr != nil || counts[cardID] != 1 {
+		t.Fatalf("counts=%v err=%v", counts, countErr)
+	}
+	// listErr 保存分页读取台账的错误；page 保存被测分页查询的返回结果。
+	page, listErr := repository.ListSaleRecords(ctx, owner.ID, cardsapp.SaleListQuery{CardID: cardID, Status: cardsapp.SaleStatusSold, Limit: 10})
+	if listErr != nil || page.Total != 1 || len(page.Records) != 1 {
+		t.Fatalf("page=%+v err=%v", page, listErr)
+	}
+	// record 是映射后的应用模型，字段必须与消费上下文一致。
+	record := page.Records[0]
+	if record.CardID != cardID || record.CardName != "台账卡" || record.CardType != "data" || record.Content != "A" || record.Status != cardsapp.SaleStatusSold ||
+		record.CookieID != "acc1" || record.OrderID != "o1" || record.ItemID != "i1" || record.BuyerID != "b1" || record.CreatedAt == 0 || record.SoldAt == 0 {
+		t.Fatalf("字段映射错误: %+v", record)
+	}
+	// all 保存卡密组的全部台账记录；allErr 保存读取全部台账的错误。
+	all, allErr := repository.AllSaleRecords(ctx, owner.ID, cardID)
+	if allErr != nil || len(all) != 1 || all[0] != record {
+		t.Fatalf("all=%+v err=%v", all, allErr)
+	}
+	// byOrder 保存按订单读取到的台账记录；orderErr 保存按订单读取台账的错误。
+	byOrder, orderErr := repository.SaleRecordsByOrder(ctx, owner.ID, "acc1", "o1")
+	if orderErr != nil || len(byOrder) != 1 || byOrder[0] != record {
+		t.Fatalf("byOrder=%+v err=%v", byOrder, orderErr)
+	}
+	// 其他用户看不到该订单的台账，且结果为非 nil 空切片。
+	empty, emptyErr := repository.SaleRecordsByOrder(ctx, owner.ID+1, "acc1", "o1")
+	if emptyErr != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty=%#v err=%v", empty, emptyErr)
 	}
 }

@@ -252,6 +252,8 @@ type Service struct {
 	uploader ImageUploader
 	// imageDownloader 负责把自动回复等 URL 图片转换为消息页面可复用的内存图片输入。
 	imageDownloader ImageURLDownloader
+	// libraryImages 负责按发送账号的所有者读取图片库图片；未装配时图片库图片回复不可用。
+	libraryImages LibraryImageReader
 	// identityResolver 保存平台身份查询端口，凭证只在适配器内部短暂存在。
 	identityResolver IdentityResolver
 	// subscription 保存实时事件订阅端口；平台和领域实现不会泄露到 HTTP 层。
@@ -264,6 +266,10 @@ type Service struct {
 	itemCatalog ChatItemCatalog
 	// sessionOperations 按账号和会话串行化人工发送与本地删除，不影响不同会话或后台自动化。
 	sessionOperations *sessionOperationGate
+	// identityFailureMu 保护 identityFailures；只做内存读写，不得在持有期间发起平台 I/O。
+	identityFailureMu sync.Mutex
+	// identityFailures 记录“账号+会话”最近一次身份查询失败时间，冷却期内不再重试，防止聊天页轮询放大为批量平台请求。
+	identityFailures map[string]time.Time
 }
 
 // New 创建聊天历史应用服务；空端口会导致构造结果不可用。
@@ -563,6 +569,14 @@ func WithChatItemCatalog(service *Service, catalog ChatItemCatalog) *Service {
 	return service
 }
 
+// WithLibraryImages 为已构造的聊天应用服务注入图片库读取能力；仅在装配阶段调用一次。
+func WithLibraryImages(service *Service, reader LibraryImageReader) *Service {
+	if service != nil {
+		service.libraryImages = reader
+	}
+	return service
+}
+
 // ReportPlatformRead 尽力上报平台已读状态；未装配运行时或空消息集合时保持无副作用。
 func (s *Service) ReportPlatformRead(ctx context.Context, accountID, chatID string, messageIDs []map[string]any) error {
 	if s == nil || s.readReporter == nil || len(messageIDs) == 0 {
@@ -579,11 +593,12 @@ func (s *Service) ResolveSessionIdentity(ctx context.Context, session Session) (
 	}
 	// resolveErr 保存平台身份查询失败，供 HTTP 层决定是否触发会话恢复。
 	var resolveErr error
-	if session.PeerUserID != "1400" && s.identityResolver != nil {
+	if s.needsIdentityLookup(session) {
 		// identity 和 err 保存平台适配器返回的非敏感身份及调用错误。
 		identity, err := s.identityResolver.Resolve(ctx, session.AccountID, session.ChatID)
 		if err != nil {
 			resolveErr = err
+			s.markIdentityFailure(session)
 		} else {
 			// name 是去除空白后的平台对端名称。
 			if name := strings.TrimSpace(identity.PeerName); name != "" {
@@ -603,7 +618,58 @@ func (s *Service) ResolveSessionIdentity(ctx context.Context, session Session) (
 	return session, resolveErr
 }
 
-// RefreshSessionIdentities 并发补全会话列表身份，保留首个失败以供调用方处理过期会话。
+// identityFailureCooldown 是单个会话身份查询失败后的静默期；期间打开或轮询该会话不会再次请求平台。
+const identityFailureCooldown = 10 * time.Minute
+
+// identityFailureKey 生成失败冷却表使用的“账号+会话”键。
+func identityFailureKey(session Session) string {
+	return session.AccountID + "\x00" + session.ChatID
+}
+
+// needsIdentityLookup 判断会话是否需要向平台补全身份：官方会话、昵称头像已完整、
+// 或仍处于失败冷却期的会话都不查询，使一次页面操作最多产生一次有界的平台请求。
+func (s *Service) needsIdentityLookup(session Session) bool {
+	if s.identityResolver == nil || session.PeerUserID == "1400" {
+		return false
+	}
+	if strings.TrimSpace(session.PeerName) != "" && strings.TrimSpace(session.PeerAvatar) != "" {
+		return false
+	}
+	s.identityFailureMu.Lock()
+	defer s.identityFailureMu.Unlock()
+	// failedAt 和 failed 保存该会话最近一次失败时间及其是否存在。
+	failedAt, failed := s.identityFailures[identityFailureKey(session)]
+	return !failed || time.Since(failedAt) >= identityFailureCooldown
+}
+
+// markIdentityFailure 记录会话身份查询失败时间，并顺带清理已过期条目以限制内存增长。
+func (s *Service) markIdentityFailure(session Session) {
+	s.identityFailureMu.Lock()
+	defer s.identityFailureMu.Unlock()
+	if s.identityFailures == nil {
+		s.identityFailures = make(map[string]time.Time)
+	}
+	// now 是本次失败记录时间，同时作为过期条目清理的基准。
+	now := time.Now()
+	// key 和 failedAt 是失败冷却表的会话键与最近失败时间。
+	for key, failedAt := range s.identityFailures {
+		if now.Sub(failedAt) >= identityFailureCooldown {
+			delete(s.identityFailures, key)
+		}
+	}
+	s.identityFailures[identityFailureKey(session)] = now
+}
+
+// maxIdentityLookupsPerRefresh 是一次列表刷新最多向平台查询的联系人身份数；
+// 其余缺失身份留给后续刷新或打开会话时逐步补全，避免一次页面操作扇出成批量平台请求。
+const maxIdentityLookupsPerRefresh = 5
+
+// identityLookupTimeout 是单个联系人平台查询的最长时间，包含账号级请求节拍的排队等待。
+const identityLookupTimeout = 10 * time.Second
+
+// RefreshSessionIdentities 顺序补全会话列表中缺失的展示身份，返回遇到的第一个平台错误。
+// 只处理缺少昵称或头像的普通联系人，单次最多 maxIdentityLookupsPerRefresh 个；
+// 出现任何平台错误（含风控、会话过期）立即停止，不再向平台发送后续请求。
 func (s *Service) RefreshSessionIdentities(ctx context.Context, accountID string, sessions []Session) ([]Session, error) {
 	accountID = strings.TrimSpace(accountID)
 	if s == nil || s.repository == nil || accountID == "" {
@@ -612,54 +678,30 @@ func (s *Service) RefreshSessionIdentities(ctx context.Context, accountID string
 	if s.identityResolver == nil {
 		return sessions, nil
 	}
-	// result 复制输入列表，避免异步身份补全修改 handler 持有的外部切片。
+	// result 复制输入列表，避免身份补全修改 handler 持有的外部切片。
 	result := append([]Session(nil), sessions...)
-	// jobs 保存待补全的会话下标。
-	jobs := make(chan int)
-	// workers 保存身份补全工作器的完成状态。
-	var workers sync.WaitGroup
-	// once 保证只记录第一个平台查询错误。
-	var once sync.Once
-	// firstErr 保存第一个平台查询错误。
-	var firstErr error
-	// workerCount 是固定的并发度，避免单个账号的联系人数量放大 goroutine 数量。
-	workerCount := 8
-	// worker 表示当前启动的身份补全工作器序号。
-	for worker := 0; worker < workerCount; worker++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			// index 表示当前待处理会话在结果切片中的下标。
-			for index := range jobs {
-				// identityCtx 和 cancel 限制单个联系人平台查询的最长时间。
-				identityCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				// updated 和 err 保存身份补全后的会话及平台查询错误。
-				updated, err := s.ResolveSessionIdentity(identityCtx, result[index])
-				cancel()
-				result[index] = updated
-				if err != nil {
-					once.Do(func() { firstErr = err })
-				}
-			}
-		}()
-	}
-	// queueDone 表示是否因为父上下文取消而提前停止投递。
-	queueDone := false
-	// index 表示当前排队会话在结果切片中的下标。
+	// lookups 统计本次已发起的平台查询数，用于执行单次上限。
+	lookups := 0
+	// index 表示当前检查的会话在结果切片中的下标。
 	for index := range result {
-		if result[index].PeerUserID == "1400" {
-			continue
-		}
-		select {
-		case jobs <- index:
-		case <-ctx.Done():
-			queueDone = true
-		}
-		if queueDone {
+		if ctx.Err() != nil || lookups >= maxIdentityLookupsPerRefresh {
 			break
 		}
+		// current 是当前待检查的会话；官方会话和身份已完整的会话不需要平台查询。
+		current := result[index]
+		if current.PeerUserID == "1400" || (strings.TrimSpace(current.PeerName) != "" && strings.TrimSpace(current.PeerAvatar) != "") {
+			continue
+		}
+		lookups++
+		// identityCtx 和 cancel 限制单个联系人平台查询的最长时间。
+		identityCtx, cancel := context.WithTimeout(ctx, identityLookupTimeout)
+		// updated 和 err 保存身份补全后的会话及平台查询错误。
+		updated, err := s.ResolveSessionIdentity(identityCtx, current)
+		cancel()
+		result[index] = updated
+		if err != nil {
+			return result, err
+		}
 	}
-	close(jobs)
-	workers.Wait()
-	return result, firstErr
+	return result, nil
 }

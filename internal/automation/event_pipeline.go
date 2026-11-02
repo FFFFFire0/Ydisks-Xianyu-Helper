@@ -107,7 +107,8 @@ func (m ruleMatcher) match(ctx context.Context, task Task) ([]db.AutomationRule,
 		if err != nil {
 			return nil, err
 		}
-		if rule == nil || rule.SKUMigrationStatus != "ready" {
+		// 规则被管理员停用后，不得再按冻结计划继续执行外部动作；恢复链路 runRecoveryTasks 已有同样的停用检查。
+		if rule == nil || !rule.Enabled || rule.SKUMigrationStatus != "ready" {
 			return nil, nil
 		}
 		return []db.AutomationRule{*rule}, nil
@@ -153,11 +154,21 @@ func (actionPlanner) plan(task Task, actions []db.AutomationAction) []db.Automat
 				out = append(out, action)
 			}
 		}
+		// hasConfirmAction 表示规则是否显式配置过确认发货动作（无论启用与否）；显式停用代表规则作者的有意选择，必须尊重。
+		hasConfirmAction := false
 		// action 表示当前遍历过程中的动作
 		for _, action := range actions {
+			if action.ActionType == ActionConfirmShipment {
+				hasConfirmAction = true
+			}
 			if action.Enabled && action.ActionType == ActionConfirmShipment {
 				out = append(out, action)
 			}
+		}
+		if !hasConfirmAction && len(out) > 0 {
+			// 规则没有任何确认发货动作（直接调 API 创建或旧版本遗留）时补一步隐式确认发货：是否真正调用平台接口仍由账号“自动确认发货”开关决定，
+			// 开关关闭时该动作直接返回，不产生外部副作用，因此账号开关不会被规则缺少动作而静默架空。
+			out = append(out, db.AutomationAction{ActionType: ActionConfirmShipment, Enabled: true, SortOrder: len(out) + 1})
 		}
 		return out
 	}

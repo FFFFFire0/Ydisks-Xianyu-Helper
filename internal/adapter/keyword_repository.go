@@ -39,13 +39,25 @@ func (r *KeywordRepository) List(ctx context.Context, userID int64, cookieID str
 	return result, nil
 }
 
-// Add 创建一条指定用户账号的关键词规则。
+// Add 创建一条指定用户账号的关键词规则，并兼容只提供旧 Keyword 字段的调用方。
 func (r *KeywordRepository) Add(ctx context.Context, userID int64, cookieID string, draft keywordsapp.Draft) (int64, error) {
 	// err 表示账号归属校验失败。
 	if err := r.authorize(ctx, userID, cookieID); err != nil {
 		return 0, err
 	}
-	return r.store.Keywords.Add(ctx, cookieID, draft.Keyword, draft.Reply, draft.ItemID, draft.Type, draft.ImageURL)
+	// expressions 保存新多表达式字段；旧调用方未提供时回退为单元素集合。
+	expressions := draft.Expressions
+	if len(expressions) == 0 {
+		expressions = []string{draft.Keyword}
+	}
+	// guardErr 保存图片库图片归属校验的失败原因，非空时拒绝写入。
+	if guardErr := r.ensureLibraryImages(ctx, userID, draft); guardErr != nil {
+		return 0, guardErr
+	}
+	return r.store.Keywords.AddRow(ctx, db.KeywordRow{
+		CookieID: cookieID, Expressions: expressions, Reply: draft.Reply, ItemID: draft.ItemID, Type: draft.Type,
+		MatchType: draft.MatchType, ImageURL: draft.ImageURL, LibraryImageID: draft.LibraryImageID,
+	})
 }
 
 // Replace 原子覆盖指定用户账号的全部关键词规则。
@@ -54,17 +66,25 @@ func (r *KeywordRepository) Replace(ctx context.Context, userID int64, cookieID 
 	if err := r.authorize(ctx, userID, cookieID); err != nil {
 		return err
 	}
+	// guardErr 保存图片库图片归属校验的失败原因，非空时拒绝写入。
+	if guardErr := r.ensureLibraryImages(ctx, userID, drafts...); guardErr != nil {
+		return guardErr
+	}
 	// rows 保存转换后的数据库关键词写入行。
 	rows := make([]db.KeywordRow, 0, len(drafts))
 	// draft 表示当前待转换的应用层关键词草稿。
 	for _, draft := range drafts {
 		rows = append(rows, db.KeywordRow{
-			CookieID: cookieID,
-			Keyword:  draft.Keyword,
-			Reply:    draft.Reply,
-			ItemID:   draft.ItemID,
-			Type:     draft.Type,
-			ImageURL: draft.ImageURL,
+			CookieID:    cookieID,
+			Keyword:     draft.Keyword,
+			Expressions: draft.Expressions,
+			MatchType:   draft.MatchType,
+			Reply:       draft.Reply,
+			ItemID:      draft.ItemID,
+			Type:        draft.Type,
+			ImageURL:    draft.ImageURL,
+
+			LibraryImageID: draft.LibraryImageID,
 		})
 	}
 	return r.store.Keywords.ReplaceForCookie(ctx, cookieID, rows)
@@ -76,10 +96,14 @@ func (r *KeywordRepository) Update(ctx context.Context, userID int64, cookieID s
 	if err := r.authorize(ctx, userID, cookieID); err != nil {
 		return err
 	}
+	// guardErr 保存图片库图片归属校验的失败原因，非空时拒绝写入。
+	if guardErr := r.ensureLibraryImages(ctx, userID, draft); guardErr != nil {
+		return guardErr
+	}
 	// err 表示数据库更新错误或目标规则不存在。
 	err := r.store.Keywords.UpdateByID(ctx, db.KeywordRow{
-		ID: id, CookieID: cookieID, Keyword: draft.Keyword, Reply: draft.Reply,
-		ItemID: draft.ItemID, Type: draft.Type, ImageURL: draft.ImageURL,
+		ID: id, CookieID: cookieID, Keyword: draft.Keyword, Expressions: draft.Expressions, MatchType: draft.MatchType,
+		Reply: draft.Reply, ItemID: draft.ItemID, Type: draft.Type, ImageURL: draft.ImageURL, LibraryImageID: draft.LibraryImageID,
 	})
 	if errors.Is(err, db.ErrNotFound) {
 		return keywordsapp.ErrNotFound
@@ -223,7 +247,7 @@ func (r *KeywordRepository) validateUser(userID int64) error {
 
 // keywordModel 将数据库关键词行转换为应用模型。
 func keywordModel(row db.KeywordRow) keywordsapp.Keyword {
-	return keywordsapp.Keyword{ID: row.ID, CookieID: row.CookieID, Keyword: row.Keyword, Reply: row.Reply, ItemID: row.ItemID, Type: row.Type, ImageURL: row.ImageURL}
+	return keywordsapp.Keyword{ID: row.ID, CookieID: row.CookieID, Keyword: row.Keyword, Expressions: row.Expressions, MatchType: row.MatchType, Reply: row.Reply, ItemID: row.ItemID, Type: row.Type, ImageURL: row.ImageURL, LibraryImageID: row.LibraryImageID}
 }
 
 // itemReplyModel 将数据库商品回复行转换为应用模型。
@@ -232,3 +256,19 @@ func itemReplyModel(row db.ItemReply) keywordsapp.ItemReply {
 }
 
 var _ keywordsapp.Repository = (*KeywordRepository)(nil)
+
+// ensureLibraryImages 确认草稿引用的图片库图片都属于当前用户，引用他人或已删除的图片按校验错误处理。
+func (r *KeywordRepository) ensureLibraryImages(ctx context.Context, userID int64, drafts ...keywordsapp.Draft) error {
+	// draft 是当前待检查的关键词草稿。
+	for _, draft := range drafts {
+		// owned、err 保存当前草稿的图片归属检查结果。
+		owned, err := libraryImageOwnedByUser(ctx, r.store, userID, draft.LibraryImageID)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			return &keywordsapp.ValidationError{Message: "图片库图片不存在"}
+		}
+	}
+	return nil
+}

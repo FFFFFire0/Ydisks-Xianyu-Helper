@@ -313,16 +313,21 @@ export interface ShippingVariant {
   custom_variables?: Record<string, string>;
 }
 
+/** 关键词匹配模式；历史 fuzzy/exact 响应在适配边界统一归一为 contains。 */
+export type ReplyMatchType = 'contains' | 'regexp';
+
 /** 由当前 feature adapter 归一后的 ReplyRule UI 模型；不直接暴露 HTTP DTO。 */
 export interface ReplyRule {
   /** 回复规则标识。 */
   id: string;
-  /** 触发关键词。 */
+  /** 兼容旧接口的首个表达式；始终与 expressions 的首项保持一致。 */
   keyword: string;
+  /** 按 OR 语义依次匹配的关键词或正则表达式。 */
+  expressions: string[];
+  /** 关键词匹配方式，contains 表示包含匹配，regexp 表示正则表达式。 */
+  match_type: ReplyMatchType;
   /** 回复正文。 */
   reply_content: string;
-  /** 关键词匹配方式。 */
-  match_type: 'exact' | 'fuzzy';
   /** 规则是否启用。 */
   enabled: boolean;
   /** 规则限定的商品标识；多选规则取 item_ids 的首项以保持单值语义。 */
@@ -333,6 +338,8 @@ export interface ReplyRule {
   type?: 'text' | 'image';
   /** 图片回复地址。 */
   image_url?: string;
+  /** 图片库图片主键；0 或缺省表示未使用图片库，与 image_url 互斥。 */
+  library_image_id?: number;
 }
 
 /** 由当前 feature adapter 归一后的 DefaultReply UI 模型；不直接暴露 HTTP DTO。 */
@@ -347,6 +354,28 @@ export interface DefaultReply {
   reply_once: boolean;
   /** 默认图片回复地址。 */
   reply_image_url?: string;
+  /** 默认回复使用的图片库图片主键；0 或缺省表示未使用，与 reply_image_url 互斥。 */
+  reply_library_image_id?: number;
+}
+
+/** 商品首次回复规则的 UI 模型，由 feature adapter 从 HTTP DTO 归一得到。 */
+export interface ItemGreetingRule {
+  /** 规则主键；新建草稿为 0。 */
+  id: number;
+  /** 规则所属账号标识。 */
+  cookie_id: string;
+  /** 规则备注名。 */
+  name: string;
+  /** 规则是否生效。 */
+  enabled: boolean;
+  /** 首次回复文字，可含 {send_user_name} 等变量。 */
+  reply_content: string;
+  /** 首次回复图片地址，可为空串。 */
+  reply_image_url: string;
+  /** 首次回复使用的图片库图片主键；0 表示未使用，与 reply_image_url 互斥。 */
+  reply_library_image_id: number;
+  /** 规则覆盖的商品标识集合。 */
+  item_ids: string[];
 }
 
 /** 自动化规则动作的原始具名 DTO。 */
@@ -467,6 +496,8 @@ export interface KeywordTypedResponse extends KeywordItemResponse {
   type: 'text' | 'image';
   /** 图片回复地址。 */
   image_url: string;
+  /** 图片库图片主键；0 表示未使用。 */
+  library_image_id?: number;
 }
 
 /** 指定商品回复项响应。 */

@@ -53,6 +53,8 @@ func TestUnknownWebSocketPaidEventDeferredThenResumesAfterLocalFacts(t *testing.
 	// store、cleanup 提供隔离数据库及测试结束后的连接释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制延期任务、订单同步事实和恢复执行的生命周期。
 	ctx := context.Background()
 	// admin、adminErr 提供卡密组和付款规则的管理用户归属。
@@ -153,6 +155,8 @@ func TestUnknownWebSocketPaidEventWithLocalSellerFactsContinuesAutomation(t *tes
 	// store、cleanup 提供隔离数据库及测试结束后的连接释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制当前测试的商品、订单和自动化动作生命周期。
 	ctx := context.Background()
 	// admin、adminErr 提供卡密组和付款规则的管理用户归属。
@@ -261,6 +265,8 @@ func TestUnknownWebSocketRecoveryRequiresSellerEvidence(t *testing.T) {
 	// store、cleanup 提供恢复路径所需的隔离数据库及资源释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制规则、订单和恢复扫描的同步生命周期。
 	ctx := context.Background()
 	// admin、adminErr 提供恢复规则的管理用户归属。
@@ -324,5 +330,34 @@ func TestUnknownWebSocketRecoveryRequiresSellerEvidence(t *testing.T) {
 	}
 	if len(sender.texts) != 1 || sender.texts[0] != "RECOVERY-CARD" {
 		t.Fatalf("未知角色历史卖家运行未恢复发货: %v", sender.texts)
+	}
+}
+
+// TestUnknownWebSocketOrderCreatedForNonLocalItemIsSkipped 验证无角色拍下事件的商品不在本账号商品库时静默跳过：
+// 不写订单事实、不进入延期队列、不创建运行；同一用户作为买家拍下他人商品即属此类。
+func TestUnknownWebSocketOrderCreatedForNonLocalItemIsSkipped(t *testing.T) {
+	// store、cleanup 提供隔离数据库及连接释放责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 限制当前测试的自动化处理生命周期。
+	ctx := context.Background()
+	// task 模拟账号作为买家拍下他人商品；该商品不在本账号商品库。
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "buyer-created", ItemID: "someone-else-item", BuyerID: "self", ChatID: "buyer-chat"}
+	// handleErr 保存拍下事件被静默跳过时的处理错误，必须为空。
+	if handleErr := New(store, nil, nil).HandleTask(ctx, task); handleErr != nil {
+		t.Fatalf("商品不在本地的拍下事件应被静默跳过: %v", handleErr)
+	}
+	// order、orderErr 验证订单没有被记入本账号。
+	if order, orderErr := store.Orders.Get(ctx, task.OrderID); !errors.Is(orderErr, db.ErrNotFound) || order != nil {
+		t.Fatalf("订单不应落入当前账号: order=%+v err=%v", order, orderErr)
+	}
+	// runCount、pendingCount 验证没有运行记录和延期任务。
+	var runCount, pendingCount int
+	// queryErr 保存运行表与延期任务表计数查询的错误。
+	if queryErr := store.DB.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM automation_runs),(SELECT COUNT(*) FROM automation_pending_tasks)`).Scan(&runCount, &pendingCount); queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if runCount != 0 || pendingCount != 0 {
+		t.Fatalf("拍下事件产生副作用: runs=%d pending=%d", runCount, pendingCount)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"xianyu-go/internal/automation"
+	"xianyu-go/internal/logging"
 )
 
 // messageDispatcher 负责 WebSocket 消息的事实解析、去重、防抖、出站回显观察和并发投递。
@@ -32,6 +33,10 @@ type messageDispatcher struct {
 	currentHandler func() Handler
 	// observeOutgoing 将账号自身回显交给账号级发送确认器；回调不得执行不可控外部 I/O。
 	observeOutgoing func(OutgoingChatMessage)
+	// observeOutgoingMatched 与 observeOutgoing 等价，并报告该回显是否被自动化发送确认消费。
+	observeOutgoingMatched func(OutgoingChatMessage) bool
+	// manualOutgoing 处理未被自动化确认消费的自身回显，即人工从官方客户端发出的消息。
+	manualOutgoing func(context.Context, OutgoingChatMessage)
 	// reply 负责自动回复链，可能为空。
 	reply *ReplyService
 	// logger 记录消息分发和防抖错误。
@@ -52,6 +57,10 @@ type messageDispatcherConfig struct {
 	CurrentHandler func() Handler
 	// ObserveOutgoing 接收账号自身 WebSocket 回显，供自动化发送确认使用。
 	ObserveOutgoing func(OutgoingChatMessage)
+	// ObserveOutgoingMatched 接收自身回显并报告是否命中自动化发送确认；返回 false 视为人工发送。
+	ObserveOutgoingMatched func(OutgoingChatMessage) bool
+	// ManualOutgoing 处理人工发送的自身回显，用于记录人工接管暂停窗口。
+	ManualOutgoing func(context.Context, OutgoingChatMessage)
 	// Reply 是自动回复服务。
 	Reply *ReplyService
 	// Logger 记录分发过程中的错误和诊断信息。
@@ -99,18 +108,25 @@ func newMessageDispatcher(config messageDispatcherConfig) messageDispatcher {
 	if observeOutgoing == nil {
 		observeOutgoing = func(OutgoingChatMessage) {}
 	}
+	// manualOutgoing 保存人工接管记录回调；未注入时不记录暂停窗口。
+	manualOutgoing := config.ManualOutgoing
+	if manualOutgoing == nil {
+		manualOutgoing = func(context.Context, OutgoingChatMessage) {}
+	}
 	return messageDispatcher{
-		processed:       make(map[string]time.Time),
-		debounceTimers:  make(map[string]*debounceEntry),
-		sem:             make(chan struct{}, MessageSemaphoreSize),
-		cookieID:        config.CookieID,
-		currentCookie:   currentCookie,
-		currentHandler:  currentHandler,
-		observeOutgoing: observeOutgoing,
-		reply:           config.Reply,
-		logger:          logger,
-		beginTask:       beginTask,
-		recordMessage:   recordMessage,
+		processed:              make(map[string]time.Time),
+		debounceTimers:         make(map[string]*debounceEntry),
+		sem:                    make(chan struct{}, MessageSemaphoreSize),
+		cookieID:               config.CookieID,
+		currentCookie:          currentCookie,
+		currentHandler:         currentHandler,
+		observeOutgoing:        observeOutgoing,
+		observeOutgoingMatched: config.ObserveOutgoingMatched,
+		manualOutgoing:         manualOutgoing,
+		reply:                  config.Reply,
+		logger:                 logger,
+		beginTask:              beginTask,
+		recordMessage:          recordMessage,
 	}
 }
 
@@ -168,6 +184,8 @@ func (d *messageDispatcher) handleMessage(decrypted map[string]any) {
 
 // handleMessageContext 将系统事件和聊天消息分别交给对应业务链。
 func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted map[string]any) {
+	// 每条消息的处理链都带账号标识，系统事件分支再补充订单与触发类型，聊天分支由回复链补充 chat_id。
+	ctx = logging.With(ctx, slog.String("account", d.cookieID))
 	// observedAt 在分类和防抖之前固定消息的本地接纳顺序，后续数据库写入延迟不会改变它与删除动作的先后关系。
 	observedAt := time.Now().UTC().UnixMilli()
 	// receipt、ok 保存解析出的平台已读回执及是否命中已读事件格式。
@@ -179,7 +197,7 @@ func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted 
 			if reader, supported := handler.(MessageReadHandler); supported {
 				// err 保存回执持久化错误；失败不应中断 WebSocket 接收循环。
 				if err := reader.HandleMessageRead(ctx, receipt); err != nil {
-					d.logger.Warn("处理聊天已读回执失败", "err", err, "message_id", receipt.MessageID)
+					d.logger.WarnContext(ctx, "处理聊天已读回执失败", "err", err, "message_id", receipt.MessageID)
 				}
 			}
 		}
@@ -187,11 +205,12 @@ func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted 
 	}
 	// 系统卡片和平台通知优先进入自动化中心，永远不进入 AI 回复范围。
 	if task := automation.ExtractTaskFromWS(d.cookieID, d.currentCookie(), decrypted); task != nil {
+		ctx = logging.With(ctx, slog.String("order_id", task.OrderID), slog.String("trigger", task.TriggerType))
 		if // handler 用于本次流程后续判断的handler
 		handler := d.currentHandler(); handler != nil {
 			if // err 用于本次流程后续判断的err
 			err := handler.HandleSystemEvent(ctx, *task); err != nil {
-				d.logger.Error("处理系统自动化事件失败", "err", err, "trigger", task.TriggerType)
+				d.logger.ErrorContext(ctx, "处理系统自动化事件失败", "err", err)
 			}
 		}
 		return
@@ -199,15 +218,27 @@ func (d *messageDispatcher) handleMessageContext(ctx context.Context, decrypted 
 	// ownEcho 保存当前账号从官方客户端发出后回显的消息；它必须实时落库，但绝不能进入自动回复防抖链。
 	if ownEcho := extractOwnWebSocketEcho(decrypted, d.cookieID, d.currentCookie()); ownEcho != nil {
 		ownEcho.ObservedAt = observedAt
-		// observeOutgoing 先于业务旁路执行，确保等待中的自动化发送不受数据库写入延迟影响。
-		d.observeOutgoing(*ownEcho)
+		// matched 表示该回显是否被自动化发送确认消费；未命中说明是人工从官方客户端发出。
+		matched := true
+		if d.observeOutgoingMatched != nil {
+			// observeOutgoingMatched 先于业务旁路执行，确保等待中的自动化发送不受数据库写入延迟影响。
+			matched = d.observeOutgoingMatched(*ownEcho)
+		} else {
+			// observeOutgoing 保持旧集成语义：无法区分来源时不记录人工接管。
+			d.observeOutgoing(*ownEcho)
+		}
+		if !matched {
+			// manualOutgoing 记录会话级暂停窗口；失败只影响暂停能力，不阻断消息落库。
+			d.manualOutgoing(ctx, *ownEcho)
+			d.logger.InfoContext(ctx, "检测到人工发送，记录自动回复暂停窗口", "chat_id", ownEcho.ChatID)
+		}
 		// handler 保存当前可选业务处理器；旧集成未实现出站观察能力时保持原有仅过滤语义。
 		if handler := d.currentHandler(); handler != nil {
 			// observer、supported 保存出站观察接口及其实现判断，避免扩大基础 Handler 的必选职责。
 			if observer, supported := handler.(outgoingChatHandler); supported {
 				// err 保存自身回显持久化或实时发布失败；失败不应影响 WebSocket 接收循环或误触发自动回复。
 				if err := observer.HandleOutgoingChatMessage(ctx, *ownEcho); err != nil {
-					d.logger.Warn("处理官方客户端出站消息回显失败", "err", err, "chat_id", ownEcho.ChatID)
+					d.logger.WarnContext(ctx, "处理官方客户端出站消息回显失败", "err", err, "chat_id", ownEcho.ChatID)
 				}
 			}
 		}
@@ -322,18 +353,20 @@ func (d *messageDispatcher) scheduleDebouncedReply(chat ChatMessage) {
 			return
 		}
 		defer finish()
+		// 防抖回复链路的日志统一带账号与会话，回复决策与发送失败无需再逐条补参。
+		ctx = logging.With(ctx, slog.String("account", d.cookieID), slog.String("chat_id", lastMessage.ChatID), slog.String("item_id", lastMessage.ItemID))
 		if // handler 用于本次流程后续判断的handler
 		handler := d.currentHandler(); handler != nil {
 			if // err 用于本次流程后续判断的err
 			err := handler.HandleChatMessage(ctx, lastMessage); err != nil {
-				d.logger.Error("处理聊天消息失败", "err", err, "chat_id", chat.ChatID)
+				d.logger.ErrorContext(ctx, "处理聊天消息失败", "err", err)
 				return
 			}
 		}
 		if d.reply != nil && d.canAutoReply(ctx, lastMessage) {
 			if // err 用于本次流程后续判断的err
 			err := d.reply.Handle(ctx, lastMessage); err != nil {
-				d.logger.Error("处理自动回复失败", "err", err, "chat_id", chat.ChatID)
+				d.logger.ErrorContext(ctx, "处理自动回复失败", "err", err)
 			}
 		}
 	})

@@ -30,6 +30,45 @@ type cardRepositoryStub struct {
 	appendedContent string
 	// appendedCount 是追加成功时返回的有效库存行数。
 	appendedCount int
+	// guardedExpected 是库存快照守卫更新收到的旧库存；guardedCalls 记录守卫更新调用次数。
+	guardedExpected string
+	guardedCalls    int
+	// guardRejects 模拟数据库库存已与快照不一致而未写入。
+	guardRejects bool
+	// saleCounts 与 saleCountsErr 是售出数量查询的预设结果；salePage、saleRecords 与 saleErr 是售出记录查询的预设结果。
+	saleCounts    map[int64]int64
+	saleCountsErr error
+	salePage      SalePage
+	saleRecords   []SaleRecord
+	saleErr       error
+	// saleQuery 记录最近一次分页查询收到的规范化条件，userID 记录隔离条件。
+	saleQuery  SaleListQuery
+	saleUserID int64
+	// saleOrderCookie 与 saleOrderID 记录按订单查询收到的参数。
+	saleOrderCookie, saleOrderID string
+}
+
+// SaleCounts 返回预设已售数量。
+func (r *cardRepositoryStub) SaleCounts(_ context.Context, userID int64) (map[int64]int64, error) {
+	r.saleUserID = userID
+	return r.saleCounts, r.saleCountsErr
+}
+
+// ListSaleRecords 记录规范化后的分页条件并返回预设页。
+func (r *cardRepositoryStub) ListSaleRecords(_ context.Context, userID int64, query SaleListQuery) (SalePage, error) {
+	r.saleUserID, r.saleQuery = userID, query
+	return r.salePage, r.saleErr
+}
+
+// AllSaleRecords 返回预设的全部售出记录。
+func (r *cardRepositoryStub) AllSaleRecords(context.Context, int64, int64) ([]SaleRecord, error) {
+	return r.saleRecords, r.saleErr
+}
+
+// SaleRecordsByOrder 记录订单查询参数并返回预设记录。
+func (r *cardRepositoryStub) SaleRecordsByOrder(_ context.Context, userID int64, cookieID, orderID string) ([]SaleRecord, error) {
+	r.saleUserID, r.saleOrderCookie, r.saleOrderID = userID, cookieID, orderID
+	return r.saleRecords, r.saleErr
 }
 
 // ListForUser 返回预设列表并记录用户隔离条件。
@@ -60,6 +99,17 @@ func (r *cardRepositoryStub) Create(_ context.Context, card Card) (int64, error)
 func (r *cardRepositoryStub) Update(_ context.Context, card Card) error {
 	r.updatedCard = card
 	return r.updateErr
+}
+
+// UpdateIfDataUnchanged 记录守卫快照，并按 guardRejects 模拟库存是否已被并发消费。
+func (r *cardRepositoryStub) UpdateIfDataUnchanged(_ context.Context, card Card, expectedData string) (bool, error) {
+	r.guardedCalls++
+	r.guardedExpected = expectedData
+	if r.updateErr != nil || r.guardRejects {
+		return false, r.updateErr
+	}
+	r.updatedCard = card
+	return true, nil
 }
 
 // UpdateDataMetadata 记录不覆盖库存正文的数据卡元数据更新。
@@ -146,7 +196,7 @@ func TestServiceCreateValidation(t *testing.T) {
 		{name: "invalid-delay", draft: Draft{Name: "x", Type: "text", TextContent: "x", DelaySeconds: 3601}, want: "延时发货必须在 0 到 3600 秒之间"},
 		{name: "empty-text", draft: Draft{Name: "x", Type: "text", TextContent: "  "}, want: "文本卡密内容不能为空"},
 		{name: "empty-data", draft: Draft{Name: "x", Type: "data", DataContent: "\n"}, want: "数据卡密内容不能为空"},
-		{name: "empty-image", draft: Draft{Name: "x", Type: "image", ImageURL: ""}, want: "图片卡密 URL 不能为空"},
+		{name: "empty-image", draft: Draft{Name: "x", Type: "image", ImageURL: ""}, want: "图片卡密需要选择图片库图片或填写 URL"},
 		{name: "non-http-image", draft: Draft{Name: "x", Type: "image", ImageURL: "file:///tmp/card.png"}, want: "图片卡密 URL 必须是 HTTP(S) 地址"},
 		{name: "credential-image", draft: Draft{Name: "x", Type: "image", ImageURL: "https://user:pass@example.com/card.png"}, want: "图片卡密 URL 必须是 HTTP(S) 地址"},
 	} {
@@ -237,6 +287,39 @@ func TestServiceUpdateDataMetadataRetainsStock(t *testing.T) {
 	explicitContentErr := service.Update(context.Background(), 7, 18, Draft{Name: "库存卡", Type: "data", Enabled: true, DataContent: "新库存", DataContentSet: true})
 	if explicitContentErr != nil || repository.updatedCard.IsMultiSpec != true || repository.updatedCard.SpecName != "套餐" || repository.updatedCard.SpecValue != "年度" {
 		t.Fatalf("替换库存时规格条件被清空 updated=%+v err=%v", repository.updatedCard, explicitContentErr)
+	}
+}
+
+// TestServiceUpdateDataStockUsesSnapshotGuard 验证提交库存快照时走守卫更新，快照过期返回 ErrDataStockChanged，未提交快照保持历史覆盖语义。
+func TestServiceUpdateDataStockUsesSnapshotGuard(t *testing.T) {
+	// repository 保存当前库存为“B”的 data 卡券。
+	repository := &cardRepositoryStub{card: Card{ID: 18, UserID: 7, Name: "库存卡", Type: "data", DataContent: "B", Enabled: true}}
+	// service 是使用可观测仓储的卡券应用服务。
+	service := NewService(repository)
+	// draft 是编辑者基于旧快照“A\nB”追加 C 的库存替换。
+	draft := Draft{Name: "库存卡", Type: "data", Enabled: true, DataContent: "A\nB\nC", DataContentSet: true, ExpectedDataContent: "A\nB", ExpectedDataContentSet: true}
+	// successErr 保存快照仍匹配时的守卫更新结果。
+	if successErr := service.Update(context.Background(), 7, 18, draft); successErr != nil || repository.guardedCalls != 1 || repository.guardedExpected != "A\nB" || repository.updatedCard.DataContent != "A\nB\nC" {
+		t.Fatalf("守卫更新未正确执行 calls=%d expected=%q updated=%+v err=%v", repository.guardedCalls, repository.guardedExpected, repository.updatedCard, successErr)
+	}
+	repository.guardRejects = true
+	// staleErr 保存快照过期时的业务错误，必须可被 HTTP 边界识别为冲突。
+	if staleErr := service.Update(context.Background(), 7, 18, draft); !errors.Is(staleErr, ErrDataStockChanged) {
+		t.Fatalf("过期快照应返回 ErrDataStockChanged，got %v", staleErr)
+	}
+	repository.guardRejects = false
+	repository.updateErr = errors.New("db down")
+	// infraErr 保存守卫更新的基础设施错误，不能被误报为库存冲突。
+	if infraErr := service.Update(context.Background(), 7, 18, draft); infraErr == nil || errors.Is(infraErr, ErrDataStockChanged) {
+		t.Fatalf("数据库错误应原样返回，got %v", infraErr)
+	}
+	repository.updateErr = nil
+	// callsBefore 记录无快照请求前的守卫调用次数。
+	callsBefore := repository.guardedCalls
+	// legacyErr 保存历史客户端未提交快照时的无条件覆盖结果。
+	legacyErr := service.Update(context.Background(), 7, 18, Draft{Name: "库存卡", Type: "data", Enabled: true, DataContent: "X", DataContentSet: true})
+	if legacyErr != nil || repository.guardedCalls != callsBefore || repository.updatedCard.DataContent != "X" {
+		t.Fatalf("未提交快照应保持历史覆盖语义 calls=%d updated=%+v err=%v", repository.guardedCalls, repository.updatedCard, legacyErr)
 	}
 }
 
@@ -437,3 +520,30 @@ func TestServiceCoversRemainingCRUDBoundaries(t *testing.T) {
 }
 
 var _ Repository = (*cardRepositoryStub)(nil)
+
+// TestServiceImageCardAcceptsLibraryImageAndRejectsAmbiguousSource 验证图片卡密可用图片库图片，且与 URL 互斥。
+func TestServiceImageCardAcceptsLibraryImageAndRejectsAmbiguousSource(t *testing.T) {
+	// repository、service 是记录创建输入的持久化替身和被测服务。
+	repository := &cardRepositoryStub{createdID: 21}
+	// service 是被测的应用服务，绑定本用例的仓储替身。
+	service := NewService(repository)
+	// err 保存被测调用的失败原因，断言时按预期分支检查。
+	if _, err := service.Create(context.Background(), 7, Draft{Name: "图", Type: "image", LibraryImageID: 4}); err != nil {
+		t.Fatalf("图片库图片卡密应可创建: %v", err)
+	}
+	if repository.createdCard.LibraryImageID != 4 || repository.createdCard.ImageURL != "" {
+		t.Fatalf("图片库图片未写入模型: %+v", repository.createdCard)
+	}
+	// draft 是待校验的一份草稿输入；name 是当前场景的名称，用于失败信息定位。
+	for name, draft := range map[string]Draft{
+		"both":     {Name: "图", Type: "image", ImageURL: "https://a.example/x.png", LibraryImageID: 4},
+		"negative": {Name: "图", Type: "image", LibraryImageID: -1},
+	} {
+		// validationError 保存非法图片来源的校验错误。
+		var validationError *ValidationError
+		// err 保存被测调用的失败原因，断言时按预期分支检查。
+		if _, err := service.Create(context.Background(), 7, draft); !errors.As(err, &validationError) {
+			t.Fatalf("%s 应为校验错误: %v", name, err)
+		}
+	}
+}

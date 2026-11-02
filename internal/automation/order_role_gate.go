@@ -19,12 +19,11 @@ const roleVerificationTaskKeyField = "automation_role_verification_key"
 // roleVerificationRetryInterval 控制首条未知角色事件等待订单/商品同步的最短间隔。
 const roleVerificationRetryInterval = time.Minute
 
+// reasonOrderCreatedNotLocalItem 表示无角色拍下事件的商品不在本账号本地商品库；该原因不可重试，调用方静默跳过。
+const reasonOrderCreatedNotLocalItem = "order_created_not_local_item"
+
 // errSellerRoleEvidencePending 表示待核验任务暂时没有足够的本地卖家事实；调度器会按既有延期队列退避并最终通知人工。
 var errSellerRoleEvidencePending = errors.New("未知角色事件暂缺本地卖家事实")
-
-// unknownRoleEvidenceMaxAge 限制未知角色延期任务等待本地事实的最长时间。
-// 超过该时长仍无任何订单、商品或会话事实的报文，基本可判定为平台重复简化事件；静默关闭避免持续人工告警。
-const unknownRoleEvidenceMaxAge = 48 * time.Hour
 
 // isWebSocketShippingTask 判断任务是否来自 WebSocket 的付款后发货阶段；只有这类事件需要未知角色证据门禁。
 func isWebSocketShippingTask(task Task) bool {
@@ -41,9 +40,18 @@ func isWebSocketSellerOrderTask(task Task) bool {
 	return strings.TrimSpace(task.Source) == "ws" && strings.TrimSpace(task.TriggerType) == TriggerOrderCreated
 }
 
-// authorizeWebSocketSellerTask 校验缺少 role 的 WebSocket 发货事件是否能由本地卖家事实证明。
+// authorizeWebSocketSellerTask 校验缺少 role 的 WebSocket 发货事件是否能由本地卖家事实证明；
+// 任何来源、任何角色的付款事件缺订单号时一律拒绝（missing_order_id，可重试）。
 // 未通过校验时返回 false 且不写订单事实；数据库读取失败返回错误，调用方必须停止外部动作并保留后续扫描机会。
 func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (Task, bool, string, error) {
+	if task.TriggerType == TriggerOrderPaid && strings.TrimSpace(task.OrderID) == "" {
+		// 付款发货必须由订单号证明交易身份：无论事件来源，即使明确标为卖家，缺订单号也不得放行，
+		// 否则准备阶段会因订单号为空而跳过订单事实与数量核验。该原因不可重试，事件被丢弃，订单同步后的兜底由待发货扫描负责。
+		if task.OrderRole == OrderRoleBuyer {
+			return task, false, "explicit_buyer_role", nil
+		}
+		return task, false, "missing_order_id", nil
+	}
 	if !isWebSocketSellerOrderTask(task) {
 		return task, true, "", nil
 	}
@@ -54,16 +62,9 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 		return task, false, "explicit_buyer_role", nil
 	}
 	if task.TriggerType == TriggerOrderCreated {
-		// 简化拍下报文常缺商品号：同一会话或同一商品的交易已由完整事件结算时，重复报文应视为已解决。
-		resolved, resolvedReason, evalErr := c.settledTradeEvidence(ctx, task)
-		if evalErr != nil {
-			return task, false, "", evalErr
-		}
-		if resolved {
-			return task, false, resolvedReason, nil
-		}
 		if strings.TrimSpace(task.ItemID) == "" {
-			return task, false, "missing_local_item", nil
+			// 拍下事件没有商品号时无法证明是本账号商品，自动化没有意义，直接跳过。
+			return task, false, reasonOrderCreatedNotLocalItem, nil
 		}
 		if c == nil || c.store == nil || c.store.Items == nil {
 			return task, false, "item_store_unavailable", nil
@@ -74,26 +75,19 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 			return task, false, "", fmt.Errorf("核对未知角色拍下商品归属: %w", itemErr)
 		}
 		if !owned {
-			return task, false, "missing_local_item", nil
+			// 商品不在本账号商品库时，拍下自动化本身没有意义（同一用户作为买家拍下他人商品也属此类），静默跳过：
+			// 不延期、不通知、不请求平台。付款后的发货由付款事件和待发货扫描负责，不依赖拍下事件。
+			return task, false, reasonOrderCreatedNotLocalItem, nil
 		}
 		task.OrderRole = OrderRoleSeller
 		return task, true, "", nil
 	}
-		if c == nil || c.store == nil || c.store.Orders == nil {
-			return task, false, "order_store_unavailable", nil
+	if c == nil || c.store == nil || c.store.Orders == nil {
+		return task, false, "order_store_unavailable", nil
 	}
-		if strings.TrimSpace(task.OrderID) == "" {
-		// 简化系统事件只带部分标识：同一会话或同一商品的交易已结算时，重复报文应视为已解决而不是无限延期。
-		resolved, resolvedReason, evalErr := c.settledTradeEvidence(ctx, task)
-		if evalErr != nil {
-			return task, false, "", evalErr
-		}
-		if resolved {
-			return task, false, resolvedReason, nil
-		}
+	if strings.TrimSpace(task.OrderID) == "" {
 		return task, false, "missing_order_id", nil
 	}
-
 	// order、orderErr 保存当前账号的本地订单事实；读取范围随后还会再次核对账号归属。
 	order, orderErr := c.store.Orders.Get(ctx, task.OrderID)
 	if errors.Is(orderErr, db.ErrNotFound) {
@@ -145,23 +139,67 @@ func (c *Center) authorizeWebSocketSellerTaskWithOrder(ctx context.Context, task
 	return task, true, "", nil
 }
 
-// isPendingShipOrder 判断本地订单是否仍处于付款后待发货阶段，并兼容同步接口写入的状态别名。
+// isPendingShipOrder 判断本地订单是否仍处于付款后待发货阶段；状态别名与数字码的归一规则统一由 db.IsPendingShipStatus 定义。
 func isPendingShipOrder(order *db.Order) bool {
 	if order == nil {
 		return false
 	}
-	switch db.NormalizeOrderStatus(strings.TrimSpace(order.OrderStatus)) {
-	case "pending_ship", "pending_delivery", "partial_success", "partial_pending_finalize":
-		return true
+	return db.IsPendingShipStatus(order.OrderStatus)
+}
+
+// paidDeliveryBlockedReason 判断订单是否已被证明不应再执行付款发货，返回空字符串表示可以继续。
+// 付款 WebSocket 事件本身不写入 pending_ship，订单状态可能仍是 unknown 或 processing，因此这里只拦截已发货、已完成、
+// 已取消、退款中、部分发货（partial_success、partial_pending_finalize，再发卡会重复交付）和系统已发货的订单，不要求状态必须等于待发货；订单为 nil（本地尚无记录）时放行，由后续规则与幂等键兜底。
+func paidDeliveryBlockedReason(order *db.Order) string {
+	if order == nil {
+		return ""
+	}
+	if order.SystemShipped {
+		return "system_shipped"
+	}
+	// status 是归一后的订单状态，用于判断是否已越过待发货阶段。
+	status := db.NormalizeOrderStatus(strings.TrimSpace(order.OrderStatus))
+	switch status {
+	case "shipped", "completed", "cancelled", "refunding", "partial_success", "partial_pending_finalize":
+		return "order_" + status
 	default:
-		return false
+		return ""
 	}
 }
 
+// reasonOrderAmountNotPositive 表示订单成交金额为 0、负数或无法识别；服务类预约单没有真实物流订单，不得自动发货。
+const reasonOrderAmountNotPositive = "order_amount_not_positive"
+
+// reasonOrderAmountMissing 表示订单详情补全后仍没有成交金额；金额无法证明为正数时同样不得自动发货。
+const reasonOrderAmountMissing = "order_amount_missing"
+
+// paidAmountBlockedReason 判断付款发货订单的成交金额是否允许自动发货，返回空字符串表示金额为严格正数。
+// raw 是订单事实中的金额文本（可带 ¥ 前缀与千位分隔符），按十进制字符串解析以避免浮点误差；
+// 空金额返回 reasonOrderAmountMissing，由调用方决定是否已完成详情补全；零金额与非法金额返回 reasonOrderAmountNotPositive。
+func paidAmountBlockedReason(raw string) string {
+	// normalized、valid 保存规范化后的十进制金额文本及其格式是否合法。
+	normalized, valid := db.NormalizeOrderAmount(raw)
+	if !valid {
+		return reasonOrderAmountNotPositive
+	}
+	if normalized == "" {
+		return reasonOrderAmountMissing
+	}
+	// digit 逐字符检查金额是否含有 1-9 的有效数字；全为 0 与小数点即为零金额。
+	for _, digit := range normalized {
+		if digit >= '1' && digit <= '9' {
+			return ""
+		}
+	}
+	return reasonOrderAmountNotPositive
+}
+
 // roleVerificationRetryable 判断拒绝原因是否可能因订单或商品同步完成而恢复；身份冲突和已结束订单不应反复重放。
+// missing_order_id 不可重试：延期快照不会因重放而获得订单号（不允许按会话猜订单），反复重放只会耗尽次数并对已由待发货扫描
+// 处理的订单发出误报；缺订单号的付款事件直接丢弃，订单同步后的丢消息兜底由待发货扫描负责。
 func roleVerificationRetryable(reason string) bool {
 	switch reason {
-	case "missing_local_order", "missing_order_id", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
+	case "missing_local_order", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
 		return true
 	default:
 		return false
@@ -249,35 +287,4 @@ func sameOrderIdentity(left, right string) bool {
 	left = strings.TrimSuffix(strings.TrimSpace(left), "@goofish")
 	right = strings.TrimSuffix(strings.TrimSpace(right), "@goofish")
 	return left != "" && right != "" && left == right
-}
-// settledTradeEvidence 判断缺少订单号的未知角色简化事件是否已被同一商品或同一会话的已结算订单覆盖。
-// 完整事件已走完发货流程后，重复到达的简化报文应视为已解决，而不是反复延期并最终打扰人工。
-func (c *Center) settledTradeEvidence(ctx context.Context, task Task) (bool, string, error) {
-	if c == nil || c.store == nil || c.store.Orders == nil {
-		return false, "order_store_unavailable", nil
-	}
-	// isResolved 局部化"订单已不再待发货"的语义；与 isPendingShipOrder 互为反义，避免依赖不存在的辅助函数。
-	isResolved := func(order *db.Order) bool {
-		return order != nil && !isPendingShipOrder(order)
-	}
-	if itemID := strings.TrimSpace(task.ItemID); itemID != "" {
-		order, queryErr := c.store.Orders.FindLatestByItem(ctx, task.AccountID, itemID, task.BuyerID)
-		if queryErr != nil {
-			return false, "", fmt.Errorf("核对简化事件商品订单: %w", queryErr)
-		}
-		if isResolved(order) {
-			return true, "order_already_resolved", nil
-		}
-	}
-	if chatID := strings.TrimSpace(task.ChatID); chatID != "" {
-		// 会话维度查待发货订单；命中后再用 isResolved 反向判断，避免新增 FindLatestByChat 函数。
-		order, queryErr := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, chatID, task.BuyerID, task.ItemID)
-		if queryErr != nil {
-			return false, "", fmt.Errorf("核对简化事件会话订单: %w", queryErr)
-		}
-		if isResolved(order) {
-			return true, "order_already_resolved", nil
-		}
-	}
-	return false, "", nil
 }

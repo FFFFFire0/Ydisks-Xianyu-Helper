@@ -29,6 +29,11 @@ type AIReplySettings struct {
 	MaxDiscountAmount      int    `json:"max_discount_amount"`
 	MaxBargainRounds       int    `json:"max_bargain_rounds"`
 	CustomPrompts          string `json:"custom_prompts"`
+	AIMode                 string `json:"ai_mode"`
+	// ManualPauseMinutes 是人工发送消息后暂停自动回复的分钟数；0 表示关闭。
+	ManualPauseMinutes int `json:"manual_pause_minutes"`
+	// ManualPauseAIOnly 表示人工接管时只暂停 AI 回复，关键词和默认回复继续。
+	ManualPauseAIOnly bool `json:"manual_pause_ai_only"`
 }
 
 // AIBargainQuote 保存一条已经成功发送给买家的、可用于订单改价的 AI 报价。
@@ -90,13 +95,17 @@ func (a *AIReply) Get(ctx context.Context, cookieID string) (*AIReplySettings, e
 	var autoAdjustEnabled int
 	// apiKey、customPrompts 用于本次流程后续判断的apiKey、customPrompts
 	var apiKey, customPrompts sql.NullString
+	// pauseMinutes、pauseAIOnly 是人工接管暂停配置的数据库整数表示。
+	var pauseMinutes, pauseAIOnly int
 	// err 用于本次流程后续判断的err
 	err := a.DB.QueryRowContext(ctx,
 		`SELECT cookie_id, ai_enabled, auto_adjust_price_enabled, COALESCE(model_name, ''), COALESCE(api_key, ''), COALESCE(base_url, ''),
-		        max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts
+		        max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts, COALESCE(ai_mode, 'bargain_only'),
+		        COALESCE(manual_pause_minutes, 10), COALESCE(manual_pause_ai_only, 1)
 		 FROM ai_reply_settings WHERE cookie_id=?`, cookieID).Scan(
 		&s.CookieID, &enabled, &autoAdjustEnabled, &s.ModelName, &apiKey, &s.BaseURL,
-		&s.MaxDiscountPercent, &s.MaxDiscountAmount, &s.MaxBargainRounds, &customPrompts)
+		&s.MaxDiscountPercent, &s.MaxDiscountAmount, &s.MaxBargainRounds, &customPrompts, &s.AIMode,
+		&pauseMinutes, &pauseAIOnly)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -105,6 +114,8 @@ func (a *AIReply) Get(ctx context.Context, cookieID string) (*AIReplySettings, e
 	}
 	s.AIEnabled = enabled != 0
 	s.AutoAdjustPriceEnabled = autoAdjustEnabled != 0
+	s.ManualPauseMinutes = pauseMinutes
+	s.ManualPauseAIOnly = pauseAIOnly != 0
 	s.APIKey, err = a.codec.decrypt("ai-api-key", cookieID, apiKey.String)
 	if err != nil {
 		return nil, err
@@ -116,6 +127,9 @@ func (a *AIReply) Get(ctx context.Context, cookieID string) (*AIReplySettings, e
 	if s.BaseURL == "" {
 		s.BaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 	}
+	if s.AIMode == "" {
+		s.AIMode = "bargain_only"
+	}
 	return &s, nil
 }
 
@@ -124,7 +138,8 @@ func (a *AIReply) ListForUser(ctx context.Context, userID int64) ([]AIReplySetti
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := a.DB.QueryContext(ctx, `
 		SELECT a.cookie_id, a.ai_enabled, a.auto_adjust_price_enabled, a.max_discount_percent, a.max_discount_amount,
-		       a.max_bargain_rounds, COALESCE(a.custom_prompts, '')
+		       a.max_bargain_rounds, COALESCE(a.custom_prompts, ''), COALESCE(a.ai_mode, 'bargain_only'),
+		       COALESCE(a.manual_pause_minutes, 10), COALESCE(a.manual_pause_ai_only, 1)
 		  FROM ai_reply_settings a JOIN cookies c ON c.id=a.cookie_id WHERE c.user_id=?`, userID)
 	if err != nil {
 		return nil, err
@@ -137,12 +152,16 @@ func (a *AIReply) ListForUser(ctx context.Context, userID int64) ([]AIReplySetti
 		var item AIReplySettings
 		// enabled 用于本次流程后续判断的启用状态
 		var enabled, autoAdjustEnabled int
+		// pauseMinutes、pauseAIOnly 是人工接管暂停配置的数据库整数表示。
+		var pauseMinutes, pauseAIOnly int
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&item.CookieID, &enabled, &autoAdjustEnabled, &item.MaxDiscountPercent, &item.MaxDiscountAmount, &item.MaxBargainRounds, &item.CustomPrompts); err != nil {
+		err := rows.Scan(&item.CookieID, &enabled, &autoAdjustEnabled, &item.MaxDiscountPercent, &item.MaxDiscountAmount, &item.MaxBargainRounds, &item.CustomPrompts, &item.AIMode, &pauseMinutes, &pauseAIOnly); err != nil {
 			return nil, err
 		}
 		item.AIEnabled = enabled != 0
 		item.AutoAdjustPriceEnabled = autoAdjustEnabled != 0
+		item.ManualPauseMinutes = pauseMinutes
+		item.ManualPauseAIOnly = pauseAIOnly != 0
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -150,21 +169,33 @@ func (a *AIReply) ListForUser(ctx context.Context, userID int64) ([]AIReplySetti
 
 // UpsertSettings 保存指定账号的 AI 回复开关和砍价约束。
 func (a *AIReply) UpsertSettings(ctx context.Context, cookieID string, settings AIReplySettings) error {
+	// minutes 是人工接管暂停时长，写入前收敛到 0 至 1440 分钟。
+	minutes := settings.ManualPauseMinutes
+	if minutes < 0 {
+		minutes = 0
+	}
+	if minutes > 1440 {
+		minutes = 1440
+	}
 	// err 用于本次流程后续判断的err
 	_, err := a.DB.ExecContext(ctx,
 		`INSERT INTO ai_reply_settings
 		 (cookie_id, ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount,
-		  max_bargain_rounds, custom_prompts, updated_at)
-		 VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(a.Dialect, []string{"cookie_id"}, map[string]string{
+		  max_bargain_rounds, custom_prompts, ai_mode, manual_pause_minutes, manual_pause_ai_only, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(a.Dialect, []string{"cookie_id"}, map[string]string{
 			"ai_enabled":                "EXCLUDED.ai_enabled",
 			"auto_adjust_price_enabled": "EXCLUDED.auto_adjust_price_enabled",
 			"max_discount_percent":      "EXCLUDED.max_discount_percent",
 			"max_discount_amount":       "EXCLUDED.max_discount_amount",
 			"max_bargain_rounds":        "EXCLUDED.max_bargain_rounds",
 			"custom_prompts":            "EXCLUDED.custom_prompts",
+			"ai_mode":                   "EXCLUDED.ai_mode",
+			"manual_pause_minutes":      "EXCLUDED.manual_pause_minutes",
+			"manual_pause_ai_only":      "EXCLUDED.manual_pause_ai_only",
 			"updated_at":                "CURRENT_TIMESTAMP",
 		}), cookieID, boolToInt(settings.AIEnabled), boolToInt(settings.AutoAdjustPriceEnabled), settings.MaxDiscountPercent,
-		settings.MaxDiscountAmount, settings.MaxBargainRounds, nullableAIString(settings.CustomPrompts))
+		settings.MaxDiscountAmount, settings.MaxBargainRounds, nullableAIString(settings.CustomPrompts), settings.AIMode,
+		minutes, boolToInt(settings.ManualPauseAIOnly))
 	return err
 }
 

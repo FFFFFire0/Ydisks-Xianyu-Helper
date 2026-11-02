@@ -91,11 +91,12 @@ func NewScheduler(store *db.Store, starter AccountStarter, refresher PasswordRef
 	if len(notifiers) > 0 {
 		notifier = notifiers[0]
 	}
+	// 注入的 logger 统一附加子系统标记，使运行日志可以按来源区分续期任务诊断。
 	return &Scheduler{
 		store:     store,
 		starter:   starter,
 		refresher: refresher,
-		logger:    logger,
+		logger:    logger.With("subsys", "renewal"),
 		mtop:      mtop.NewClient(),
 		api:       apirenew.Service{},
 		cooldown:  GlobalCooldown,
@@ -229,7 +230,7 @@ func (s *Scheduler) runAPICookieRenewFixed(ctx context.Context) {
 		if !s.apiRenewEnabled(ctx) {
 			continue
 		}
-		s.logger.Info("执行续期任务", "task", "api_cookie_renew")
+		s.logger.Debug("执行续期任务", "task", "api_cookie_renew")
 		s.executeAPICookieRenew(ctx)
 	}
 }
@@ -253,7 +254,7 @@ func (s *Scheduler) runFixed(ctx context.Context, name, settingKey, intervalKey 
 		if !s.settingEnabled(ctx, settingKey, defaultEnabled) {
 			continue
 		}
-		s.logger.Info("执行续期任务", "task", name)
+		s.logger.Debug("执行续期任务", "task", name)
 		fn(ctx)
 	}
 }
@@ -272,7 +273,7 @@ func (s *Scheduler) executeLoginRenew(ctx context.Context) {
 	// i、account 表示当前遍历过程中的i、account
 	for i, account := range accounts {
 		if s.isSessionCooled(account.ID) {
-			s.logger.Info("login_renew session 冷却中，跳过", "account", account.ID)
+			s.logger.Debug("login_renew session 冷却中，跳过", "account", account.ID)
 			continue
 		}
 		s.loginRenewOne(ctx, batchID, account)

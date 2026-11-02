@@ -80,8 +80,13 @@ func newOutgoingEchoTracker() *outgoingEchoTracker {
 
 // observePlatform 接收带平台消息 ID 的发送响应；同一 ID 只允许消费一个等待项。
 func (t *outgoingEchoTracker) observePlatform(message OutgoingChatMessage) {
+	t.observePlatformMatched(message)
+}
+
+// observePlatformMatched 与 observePlatform 行为一致，并报告是否消费了等待项。
+func (t *outgoingEchoTracker) observePlatformMatched(message OutgoingChatMessage) bool {
 	if t == nil {
-		return
+		return false
 	}
 	// platformKey 保存平台消息唯一 ID，用于跨响应和推送去重。
 	platformKey := strings.TrimSpace(message.MessageKey)
@@ -89,17 +94,18 @@ func (t *outgoingEchoTracker) observePlatform(message OutgoingChatMessage) {
 	defer t.mu.Unlock()
 	if platformKey != "" && strings.TrimSpace(message.RequestID) == "" && t.hasCorrelatedWaiterLocked(message) {
 		// 无请求 mid 的推送不能提前占用 PNM；随后到达的带 mid 发送响应仍需有机会确认对应等待器。
-		return
+		return false
 	}
 	if platformKey != "" {
 		// exists 表示该平台消息 ID 是否已经消费过一个等待项。
 		if _, exists := t.seenPlatformKeys[platformKey]; exists {
-			return
+			return false
 		}
 	}
 	// matched 表示当前消息是否实际确认了等待器；只有确实归属当前事件时才登记 PNM 去重。
-	if !t.observeLocked(message) || platformKey == "" {
-		return
+	matched := t.observeLocked(message)
+	if !matched || platformKey == "" {
+		return matched
 	}
 	if len(t.seenPlatformOrder) >= maxSeenPlatformKeys {
 		// oldestKey 保存最早登记的消息 ID，淘汰它以避免长期运行的账号无限增长内存。
@@ -109,6 +115,7 @@ func (t *outgoingEchoTracker) observePlatform(message OutgoingChatMessage) {
 	}
 	t.seenPlatformKeys[platformKey] = struct{}{}
 	t.seenPlatformOrder = append(t.seenPlatformOrder, platformKey)
+	return true
 }
 
 // hasCorrelatedWaiterLocked 判断同一正文键下是否存在已经绑定请求 mid 的等待器；调用方必须持有 tracker.mu。
@@ -131,6 +138,18 @@ func (t *outgoingEchoTracker) observeMessage(message OutgoingChatMessage) {
 		return
 	}
 	t.observe(message)
+}
+
+// observeMessageMatched 处理自身回显并报告是否被自动化发送确认消费；
+// 返回 false 表示这条消息不是本系统发出的，应按人工接管处理。
+func (t *outgoingEchoTracker) observeMessageMatched(message OutgoingChatMessage) bool {
+	if t == nil {
+		return false
+	}
+	if strings.TrimSpace(message.MessageKey) != "" {
+		return t.observePlatformMatched(message)
+	}
+	return t.observeMatched(message)
 }
 
 // register 登记一条待确认消息；调用方必须在写入 WebSocket 前调用，避免回显先到造成竞态。
@@ -224,13 +243,18 @@ func (w *outgoingEchoWaiter) cancelWithLateProtection(protectLateEcho bool) {
 // observe 接收消息分发器识别出的自身回显，并唤醒第一个匹配的自动化发送等待项。
 // message 只包含已脱敏的会话、接收人和消息正文摘要，不在此处记录日志。
 func (t *outgoingEchoTracker) observe(message OutgoingChatMessage) {
+	t.observeMatched(message)
+}
+
+// observeMatched 与 observe 行为一致，并报告是否消费了等待项。
+func (t *outgoingEchoTracker) observeMatched(message OutgoingChatMessage) bool {
 	if t == nil {
-		return
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.pruneCanceledLocked(time.Now())
-	t.observeLocked(message)
+	return t.observeLocked(message)
 }
 
 // observeLocked 在 tracker.mu 保护下处理一条自身回显；返回值表示事件是否实际消费了等待器。

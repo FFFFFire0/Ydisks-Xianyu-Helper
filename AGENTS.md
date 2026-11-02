@@ -27,6 +27,7 @@ make build      # go build ./cmd/server
 make test       # go test ./...
 make test-server       # go test ./internal/server
 make test-server-race  # server 生命周期与凭证并发 smoke race
+make smoke      # 构建并启动真实二进制，经 HTTP 验证健康/初始化/登录/核心列表/前端首页/优雅退出（临时 SQLite）
 make vet        # go vet ./...
 make lint       # golangci-lint run ./... (0 issues baseline)
 make check      # fmt + architecture + API contract + vet + lint + test + comments
@@ -118,6 +119,16 @@ Vite proxies backend routes to `localhost:59188`. Production builds are written 
 4. 二人小刀免拼发货：开启“自动免拼”时，“待刀成” WebSocket 只执行一次免拼；必须等待“我已成功小刀，待发货” WebSocket 后才发卡，发卡成功后才允许确认发货。
 
 历史失败运行的恢复也属于兜底，执行任何发卡、模板或确认发货前必须重新核对：运行最初来自 WebSocket 或合法待发货兜底、订单当前仍是 `pending_ship`、订单归属账号未变化、账号仍开启自动发货。订单已取消、完成或已发货时取消旧运行；订单事实缺失、快照身份不一致或外部结果不确定时停止自动重放并发送“需要人工处理”通知。所有进入 `needs_review` 或等价人工处理状态的自动化路径都必须发送该独立通知类别；原自动化类别订阅保持兼容接收。
+
+## MTOP 请求频率约束（防风控，不可放宽）
+
+程序不可能也不应该高频访问 MTOP 接口；任何批量、循环、并发或扇出的 MTOP 请求都视为逻辑错误。风控一旦触发短期内无法恢复，定时冷却或熔断只是事后补救，**唯一有效的做法是从源头保证请求频率低**。
+
+- 所有 MTOP 出站请求必须经过 `internal/xianyu/mtop/pacer.go` 的账号级节流器（同账号请求起点间隔 ≥2 秒加随机抖动，后台批量任务通过 `mtop.WithBackgroundPacing` 标记后 ≥5 秒）。生产代码只能通过 `mtop.NewClient()` 获取客户端，禁止构造 `mtop.ClientImpl{}` 字面量或注入 `HTTPClient` 绕开节流（`TestProductionNeverInjectsHTTPClient` 守护）；禁止降低间隔、给节流器加白名单或绕过路径。
+- 一次用户操作或一次调度扫描最多对应一次（或极少量、有上限的）平台请求。禁止“列表 × 每项一次请求”的扇出：必须只处理缺失的数据、设置单次硬上限，剩余部分留待后续按需补全，禁止为赶进度增加并发。
+- 批量循环（评价、擦亮、分页、联系人身份等）遇到风控（`RGV587`/`IsRiskVerificationErr`）、会话过期或 Token 耗尽必须立即终止本批次，不得继续请求其余项，也不得依赖定时冷却后自动重放。
+- 新增任何会调用 MTOP 的循环、定时器、并发 worker 或前端自动触发请求，必须在设计中写明：单次请求上限、是否标记后台节流、遇风控如何中止，并补充对应测试；禁止只靠 Token 刷新重试、等待或日志去重来“缓解”高频访问。
+- 订单详情等已有账号级协调器（`adapter/order_detail_coordinator.go`）保持原有更严格间隔，不得与上述节流器互相替代而放宽。
 
 ## Mandatory refactoring governance — DO NOT SKIP
 
@@ -232,6 +243,13 @@ until their recorded phase is completed; agents MUST NOT add new violations.
 - New ownership checks return existence/non-sensitive identity rather than maps of decrypted Cookie values.
 - Do not hold credential locks across slow external I/O unless an authoritative protocol invariant explicitly
   requires it and the lock order is documented and tested.
+- **Sole documented exception (API card editor):** `GET /api/v1/cards/{card_id}/api-editor` may return the
+  owner's saved API-card request template (headers, query parameters and body, including third-party API keys) so
+  the owner can review and edit it. This exception was explicitly approved by the project owner and is limited to
+  that one endpoint. It requires: login plus card-ownership and `type=api` checks, `Cache-Control: no-store`,
+  no values in ordinary card lists/details, logs, notifications or error messages, secret-bearing inputs masked by
+  default in the UI, and the draft cleared when the dialog closes or the card switches. It is not a precedent: any
+  other endpoint that would return a stored secret still needs its own recorded approval.
 
 ## Mandatory HTTP API constraints
 

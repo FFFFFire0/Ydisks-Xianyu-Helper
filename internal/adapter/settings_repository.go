@@ -228,7 +228,8 @@ func (r *SettingsRepository) UpsertAIReply(ctx context.Context, cookieID string,
 	return r.store.AIReply.UpsertSettings(ctx, cookieID, db.AIReplySettings{
 		CookieID: cookieID, AIEnabled: settings.AIEnabled, AutoAdjustPriceEnabled: settings.AutoAdjustPriceEnabled,
 		MaxDiscountPercent: settings.MaxDiscountPercent, MaxDiscountAmount: settings.MaxDiscountAmount,
-		MaxBargainRounds: settings.MaxBargainRounds, CustomPrompts: settings.CustomPrompts,
+		MaxBargainRounds: settings.MaxBargainRounds, CustomPrompts: settings.CustomPrompts, AIMode: settings.AIMode,
+		ManualPauseMinutes: settings.ManualPauseMinutes, ManualPauseAIOnly: settings.ManualPauseAIOnly,
 	})
 }
 
@@ -269,7 +270,8 @@ func aiReplyModel(record db.AIReplySettings) settingsapp.AIReplySettings {
 	return settingsapp.AIReplySettings{
 		CookieID: record.CookieID, AIEnabled: record.AIEnabled, AutoAdjustPriceEnabled: record.AutoAdjustPriceEnabled,
 		MaxDiscountPercent: record.MaxDiscountPercent, MaxDiscountAmount: record.MaxDiscountAmount,
-		MaxBargainRounds: record.MaxBargainRounds, CustomPrompts: record.CustomPrompts,
+		MaxBargainRounds: record.MaxBargainRounds, CustomPrompts: record.CustomPrompts, AIMode: record.AIMode,
+		ManualPauseMinutes: record.ManualPauseMinutes, ManualPauseAIOnly: record.ManualPauseAIOnly,
 	}
 }
 

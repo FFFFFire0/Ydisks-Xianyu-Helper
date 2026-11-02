@@ -7,33 +7,38 @@ ChevronRight,
 CircleDollarSign,
 Clock3,
 Edit,
+Gift,
 Layers3,
 MessageCircle,
 Plus,
 RefreshCw,
 Save,
+ScrollText,
 Search,
-Send,
 SlidersHorizontal,
 Trash2,
 X,
 Zap,
 } from 'lucide-react';
-import React,{ useEffect,useMemo,useState } from 'react';
+import React,{ Suspense,useEffect,useMemo,useState } from 'react';
 import { createPortal } from 'react-dom';
 import Toast from '../components/Toast';
 import AllItemsConfirmation from '../components/AllItemsConfirmation';
 import { AutomationIssuePanel } from '../components/AutomationIssuePanel';
-import ItemMultiSelect from '../components/ItemMultiSelect';
 import TemplateVariantEditor from '../components/TemplateVariantEditor';
+import ReplyRuleEditor from '../components/ReplyRuleEditor';
+import ItemGreetingPanel from '../components/ItemGreetingPanel';
+import SearchableSelect from '../../../../shared/ui/SearchableSelect';
 import { useRulesData } from '../hooks';
 import { filterAutomationIssues } from '../issueState';
 import { useRuleActions } from '../ruleActions';
 import type { AutomationTriggerType,ReplyRule,RulesProps,RulesTab } from '../types';
-import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
+import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,reviewLookbackHours,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
+import { ImageSourceField } from '../../../../shared/ui/ImageSourceField';
+import { PageHeader } from '../../../../shared/ui/PageHeader';
 
 // Rules 是规则 feature 在旧页面目录下保留的兼容入口组件。
-const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHandled }) => {
+const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHandled, auditPanel: AuditPanel, libraryImageChooser }) => {
   // [activeTab, 解构得到当前 Hook 返回的状态和操作函数。
   const [activeTab, setActiveTab] = useState<RulesTab>('automation');
   // [selectedAccountId, 解构得到当前 Hook 返回的状态和操作函数。
@@ -206,6 +211,13 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
     return itemIDs.map(/* 当前回调把商品标识还原为可读标题。 */ (itemID: string) => itemTitleIndex.get(itemID) || itemID);
   };
 
+  // auditAccountLabel 把规则日志中的账号标识转换为账号展示名，未知账号回退为原标识。
+  const auditAccountLabel = (cookieId: string): string => {
+    // account 是与日志账号标识匹配的账号摘要。
+    const account = accounts.find(/* candidate 是当前比较的账号摘要。 */ candidate => candidate.id === cookieId);
+    return account ? accountLabel(account) : cookieId;
+  };
+
   // primaryActionLabel 主操作按钮文案。
   const primaryActionLabel = activeTab === 'automation'
     ? '新建自动化'
@@ -213,13 +225,10 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
       ? '新增关键词'
       : '编辑默认回复';
 
+
   return (
     <div className="min-w-0 space-y-8 animate-fade-in">
-      <div className="flex flex-col xl:flex-row justify-between xl:items-end gap-4">
-        <div>
-          <h2 className="text-4xl font-extrabold text-gray-900 tracking-tight">自动化规则</h2>
-          <p className="text-gray-500 mt-2 font-medium">系统通知卡片只进入自动化判断；买家消息进入关键词、默认或 AI 回复。</p>
-        </div>
+      <PageHeader title="自动化规则" description="系统通知卡片只进入自动化判断；买家消息进入关键词、默认或 AI 回复。">
         <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3">
           <select
             value={selectedAccountId}
@@ -241,6 +250,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </button>
+          {activeTab !== 'greeting' && activeTab !== 'logs' && (
           <button
             onClick={activeTab === 'automation' ? /* 当前回调处理用户交互或异步状态变化。 */ () => openNewAutomationRule('order_paid') : activeTab === 'reply' ? handleAddReplyRule : /* 当前回调处理用户交互或异步状态变化。 */ () => void openDefaultReplyModal()}
             disabled={!selectedAccountId}
@@ -249,14 +259,17 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
             <Plus className="w-4 h-4" />
             {primaryActionLabel}
           </button>
+          )}
         </div>
-      </div>
+      </PageHeader>
 
       <div className="flex flex-wrap gap-2 p-2 bg-gray-100/50 rounded-2xl">
         {[
           { id: 'automation' as const, label: '交易自动化', icon: Zap },
           { id: 'reply' as const, label: '关键词回复', icon: MessageCircle },
           { id: 'default' as const, label: '账号默认回复', icon: Bot },
+          { id: 'greeting' as const, label: '商品首次回复', icon: Gift },
+          { id: 'logs' as const, label: '规则日志', icon: ScrollText },
         ].map(/* 当前回调处理用户交互或异步状态变化。 */ tab => {
           // Icon 渲染Icon React 组件。
           const Icon = tab.icon;
@@ -543,31 +556,46 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
             这里只处理买家用户消息；系统通知不会进入关键词或 AI 回复。
           </div>
           <div className="space-y-3">
-            {replyRules.map(/* 当前回调处理集合中的单个元素。 */ rule => {
+            {replyRules.map(/* rule 是当前列表中待展示的关键词回复规则。 */ rule => {
               // itemLabels 是当前规则关联商品的可读标签集合。
               const itemLabels = replyRuleItemLabels(rule);
+              // expressions 是当前规则按 OR 语义展示的表达式集合，兼容旧 keyword 单值。
+              const expressions = rule.expressions?.length ? rule.expressions : (rule.keyword ? [rule.keyword] : []);
+              // firstExpression 是列表中突出展示的首个表达式。
+              const firstExpression = expressions[0] || '';
+              // additionalExpressionCount 是除首项外仍隐藏在规则中的表达式数量。
+              const additionalExpressionCount = Math.max(0, expressions.length - 1);
+              // matchLabel 是列表中说明当前规则匹配模式的中文标签。
+              const matchLabel = rule.match_type === 'regexp' ? '正则表达式' : '包含匹配';
               return (
               <div key={rule.id} className="flex flex-col md:flex-row md:items-center justify-between p-5 rounded-2xl border border-gray-100 bg-surface-subtle hover:bg-white hover:shadow-lg transition-all gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-3 mb-2">
-                    <span className="px-3 py-1 bg-black text-white rounded-lg text-xs font-bold">包含匹配</span>
-                    <h3 className="font-bold text-gray-900">“{rule.keyword}”</h3>
+                    <span className={`px-3 py-1 rounded-lg text-xs font-bold ${rule.match_type === 'regexp' ? 'bg-purple-100 text-purple-700' : 'bg-black text-white'}`}>{matchLabel}</span>
+                    <h3 className="font-bold text-gray-900">“{firstExpression}”</h3>
+                    {additionalExpressionCount > 0 && (
+                      <span className="px-3 py-1 bg-amber-50 text-amber-700 rounded-lg text-xs font-bold">+{additionalExpressionCount} 个表达式</span>
+                    )}
                     {itemLabels.length === 0 ? (
                       <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold">账号级</span>
                     ) : (
-                      itemLabels.map(/* 当前回调渲染单个关联商品标签。 */ label => (
+                      itemLabels.map(/* label 是当前规则关联商品的可读标题。 */ label => (
                         <span key={`${rule.id}-${label}`} className="max-w-[16rem] truncate px-3 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-bold" title={label}>{label}</span>
                       ))
                     )}
                   </div>
                   <div className="bg-white p-3 rounded-xl border border-gray-100 text-sm text-gray-600 leading-relaxed">
-                    {rule.type === 'image' && rule.image_url ? rule.image_url : rule.reply_content}
+                    {rule.type === 'image' ? (rule.image_url || (rule.library_image_id ? `图片库图片 #${rule.library_image_id}` : '')) : rule.reply_content}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 border-t md:border-t-0 md:border-l border-gray-200 pt-4 md:pt-0 md:pl-6">
                   <button
-                    onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => {
-                      setEditingReplyRule({ ...rule });
+                    onClick={/* 当前回调处理用户编辑并回填历史表达式和匹配模式。 */ () => {
+                      // editExpressions 是编辑器需要展示的表达式行，兼容旧 keyword 响应。
+                      const editExpressions = rule.expressions?.length ? rule.expressions : [rule.keyword || ''];
+                      // editMatchType 是编辑器支持的匹配模式，历史 fuzzy/exact 均按 contains 展示。
+                      const editMatchType = rule.match_type === 'regexp' ? 'regexp' : 'contains';
+                      setEditingReplyRule({ ...rule, expressions: editExpressions, keyword: editExpressions[0] || '', match_type: editMatchType });
                       setShowReplyModal(true);
                     }}
                     className="p-2 text-gray-400 hover:text-black hover:bg-gray-100 rounded-xl transition-colors"
@@ -616,7 +644,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                         )}
                       </div>
                       <div className="text-sm text-gray-600 line-clamp-2">
-                        {enabled ? (defaultReply.reply_content || defaultReply.reply_image_url || '已配置默认回复') : '未配置默认回复'}
+                        {enabled ? (defaultReply.reply_content || defaultReply.reply_image_url || (defaultReply.reply_library_image_id ? `图片库图片 #${defaultReply.reply_library_image_id}` : '已配置默认回复')) : '未配置默认回复'}
                       </div>
                     </div>
                   </div>
@@ -648,6 +676,18 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
             {visibleDefaultAccounts.length === 0 && <div className="text-center py-20 text-gray-400">暂无账号</div>}
           </div>
         </section>
+      )}
+
+      {activeTab === 'greeting' && <ItemGreetingPanel accountID={selectedAccountId} libraryImageChooser={libraryImageChooser} />}
+
+      {activeTab === 'logs' && (
+        AuditPanel ? (
+          <Suspense fallback={<div className="text-center py-20 text-gray-400">加载中…</div>}>
+            <AuditPanel key={selectedAccountId} accountId={selectedAccountId} accountLabel={auditAccountLabel} />
+          </Suspense>
+        ) : (
+          <div className="text-center py-20 text-gray-400">规则日志暂不可用</div>
+        )
       )}
 
       {showAutomationModal && editingAutomationRule && createPortal(
@@ -895,16 +935,14 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                             ) : (
                               <div>
                                 <label className="block text-xs font-bold text-gray-600 mb-2">卡密库存</label>
-                                <select
-                                  value={variant.card_id || ''}
-                                  onChange={/* 当前回调选择卡密库存。 */ event => updateVariant(index, { card_id: Number(event.target.value) })}
-                                  className="w-full ios-input px-3 py-2.5 rounded-lg"
-                                >
-                                  <option value="">请选择卡密库存</option>
-                                  {cards.filter(isDeliveryCardReady).map(/* 当前回调处理集合中的单个元素。 */ card => (
-                                    <option key={card.id} value={card.id}>{card.name}</option>
-                                  ))}
-                                </select>
+                                <SearchableSelect
+                                  options={cards.filter(isDeliveryCardReady).map(/* card 转换为可搜索选项，仅保留主键与名称。 */ card => ({ value: card.id, label: card.name }))}
+                                  value={variant.card_id}
+                                  onChange={/* cardID 是用户选中的卡密库存主键，0 表示清空。 */ cardID => updateVariant(index, { card_id: cardID })}
+                                  placeholder="请选择卡密库存"
+                                  ariaLabel="卡密库存"
+                                />
+
                               </div>
                             )}
                             <div>
@@ -1010,6 +1048,22 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                           />
                         </div>
                         <div className="md:col-span-3">
+                          <label className="block text-sm font-bold text-gray-700 mb-2">仅处理最近 N 小时内发货的订单</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={reviewLookbackHours(editingAutomationRule.config_json)}
+                            onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingAutomationRule({
+                              ...editingAutomationRule,
+                              config_json: buildReviewConfig(editingAutomationRule.config_json, {
+                                max_lookback_hours: Math.max(1, Number(event.target.value) || 1),
+                              }),
+                            })}
+                            className="w-full ios-input px-4 py-3 rounded-xl"
+                          />
+                          <p className="text-xs text-gray-500 mt-2">发货时间早于该窗口的订单不会求评价，避免规则停用后重新启用时给历史订单补发消息。默认值为走完全部求评流程所需时长再加 24 小时；填写值不会小于「发货后等待小时」。</p>
+                        </div>
+                        <div className="md:col-span-3">
                           <label className="block text-sm font-bold text-gray-700 mb-2">求评价文案</label>
                           <textarea
                             value={editingAutomationRule.actions?.find(/* 当前回调处理集合中的单个元素。 */ action => action.action_type === 'send_text')?.message_template || ''}
@@ -1030,7 +1084,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                     <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-4 items-end">
                       <div>
 						<label className="block text-sm font-bold text-gray-700 mb-2">优先级</label>
-						<p className="text-xs text-gray-500 mb-2">数字越小优先级越高；同一账号、商品和触发条件只执行优先级最高的一条规则。</p>
+						<p className="text-xs text-gray-500 mb-2">数字越小优先级越高；同一账号、商品和触发条件只执行优先级最高的一条规则；商品级规则存在时，账号级规则不会生效。</p>
                         <input
                           type="number"
                           value={editingAutomationRule.priority || 100}
@@ -1069,107 +1123,15 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
         document.body
       )}
 
-      {showReplyModal && editingReplyRule && createPortal(
-        <div className="modal-overlay">
-          <div className="modal-container">
-            <div className="modal-header">
-              <div className="flex items-center justify-between w-full">
-                <h3 className="text-2xl font-extrabold text-gray-900">
-                  {editingReplyRule.id ? '编辑回复规则' : '新增回复规则'}
-                </h3>
-                <button
-                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowReplyModal(false)}
-                  className="p-2 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
-                >
-                  <X className="w-5 h-5 text-gray-600" />
-                </button>
-              </div>
-            </div>
-
-            <div className="modal-body space-y-5">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">关联商品</label>
-                  <ItemMultiSelect
-                    options={replyModalItems}
-                    value={editingReplyRule.item_ids?.length ? editingReplyRule.item_ids : (editingReplyRule.item_id ? [editingReplyRule.item_id] : [])}
-                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ itemIDs => setEditingReplyRule({ ...editingReplyRule, item_ids: itemIDs, item_id: itemIDs[0] || '' })}
-                  />
-                  <p className="mt-2 text-xs text-gray-400">可多选；不选表示账号级回复。候选来自本地已同步商品，支持搜索。</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">回复类型</label>
-                  <select
-                    value={editingReplyRule.type || 'text'}
-                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => {
-                      // type 类型。
-                      const type = event.target.value as 'text' | 'image';
-                      setEditingReplyRule({
-                        ...editingReplyRule,
-                        type,
-                        reply_content: type === 'text' ? editingReplyRule.reply_content : '',
-                        image_url: type === 'image' ? editingReplyRule.image_url : '',
-                      });
-                    }}
-                    className="w-full ios-input px-4 py-3 rounded-xl"
-                  >
-                    <option value="text">文字</option>
-                    <option value="image">图片</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">关键词</label>
-                <input
-                  type="text"
-                  value={editingReplyRule.keyword || ''}
-                  onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, keyword: event.target.value })}
-                  placeholder="买家发送的关键词"
-                  className="w-full ios-input px-4 py-3 rounded-xl"
-                />
-              </div>
-
-              {editingReplyRule.type === 'image' ? (
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">图片 URL</label>
-                  <input
-                    value={editingReplyRule.image_url || ''}
-                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, image_url: event.target.value })}
-                    placeholder="https://..."
-                    className="w-full ios-input px-4 py-3 rounded-xl"
-                  />
-                </div>
-              ) : (
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">回复内容</label>
-                  <textarea
-                    value={editingReplyRule.reply_content || ''}
-                    onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingReplyRule({ ...editingReplyRule, reply_content: event.target.value })}
-                    placeholder="自动回复的内容"
-                    className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none"
-                  />
-                </div>
-              )}
-
-              <div className="flex gap-3 pt-4">
-                <button
-                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowReplyModal(false)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={handleSaveReplyRule}
-                  className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
-                >
-                  <Send className="w-4 h-4" />
-                  保存规则
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>,
-        document.body
+      {showReplyModal && editingReplyRule && (
+        <ReplyRuleEditor
+          rule={editingReplyRule}
+          setRule={setEditingReplyRule}
+          items={replyModalItems}
+          onClose={/* 当前回调关闭关键词回复编辑器。 */ () => setShowReplyModal(false)}
+          onSave={/* 当前回调提交关键词回复规则。 */ handleSaveReplyRule}
+          libraryImageChooser={libraryImageChooser}
+        />
       )}
 
       {showDefaultModal && createPortal(
@@ -1231,13 +1193,11 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
               </div>
 
               <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">回复图片 URL（可选）</label>
-                <input
-                  type="text"
-                  value={defaultForm.reply_image_url}
-                  onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setDefaultForm({ ...defaultForm, reply_image_url: event.target.value })}
-                  placeholder="https://example.com/image.jpg"
-                  className="w-full ios-input px-4 py-3 rounded-xl"
+                <label className="block text-sm font-bold text-gray-700 mb-2">回复图片（可选）</label>
+                <ImageSourceField
+                  value={{ url: defaultForm.reply_image_url, libraryImageId: defaultForm.reply_library_image_id }}
+                  onChange={/* source 是用户选择的新图片来源；外链与图片库图片互斥。 */ source => setDefaultForm({ ...defaultForm, reply_image_url: source.url, reply_library_image_id: source.libraryImageId })}
+                  chooser={libraryImageChooser}
                 />
               </div>
 

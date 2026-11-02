@@ -28,16 +28,26 @@ type Store struct {
 	Keywords         *Keywords
 	DefaultReps      *DefaultReplies
 	ItemReps         *ItemReplies
+	// ItemGreetings 保存商品首次回复规则与按会话去重的投递记录。
+	ItemGreetings *ItemGreetings
+	// LibraryImages 保存本地资源库图片的元数据；图片字节位于上传根目录。
+	LibraryImages *LibraryImages
+	// ProductTemplates 保存可批量铺货的商品模板。
+	ProductTemplates *ProductTemplates
 	AIReply          *AIReply
-	Notifications    *Notifications
-	Settings         *SystemSettings
-	UserSettings     *UserSettings
-	WSMessages       *WSMessageStore
-	PublishBatches   *ItemPublishBatches
-	Tokens           *AccountTokens
-	Renewal          *RenewalStore
-	LoginLogs        *AccountLoginLogs
-	RiskLogs         *RiskControlLogs
+	// AIManualPauses 保存人工接管产生的会话级自动回复暂停窗口。
+	AIManualPauses *AIManualPauses
+	// ItemAISettings 保存商品级 AI 启停覆盖与专属资料。
+	ItemAISettings *ItemAISettings
+	Notifications  *Notifications
+	Settings       *SystemSettings
+	UserSettings   *UserSettings
+	WSMessages     *WSMessageStore
+	PublishBatches *ItemPublishBatches
+	Tokens         *AccountTokens
+	Renewal        *RenewalStore
+	LoginLogs      *AccountLoginLogs
+	RiskLogs       *RiskControlLogs
 	// SecurityAudit 保存敏感配置访问审计记录。
 	SecurityAudit *SecurityAuditLogs
 	Chats         *ChatStore
@@ -91,7 +101,12 @@ func NewStore(db *sql.DB, dialect Dialect) *Store {
 		Keywords:          &Keywords{DB: db, Dialect: dialect},
 		DefaultReps:       &DefaultReplies{DB: db, Dialect: dialect},
 		ItemReps:          &ItemReplies{DB: db, Dialect: dialect},
+		ItemGreetings:     &ItemGreetings{DB: db, Dialect: dialect},
+		LibraryImages:     &LibraryImages{DB: db, Dialect: dialect},
+		ProductTemplates:  &ProductTemplates{DB: db, Dialect: dialect},
 		AIReply:           &AIReply{DB: db, Dialect: dialect, codec: codec},
+		AIManualPauses:    &AIManualPauses{DB: db, Dialect: dialect},
+		ItemAISettings:    &ItemAISettings{DB: db, Dialect: dialect},
 		Notifications:     &Notifications{DB: db, Dialect: dialect, codec: codec},
 		Settings:          &SystemSettings{DB: db, Dialect: dialect, codec: codec},
 		UserSettings:      &UserSettings{DB: db, Dialect: dialect},

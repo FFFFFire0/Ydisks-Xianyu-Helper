@@ -41,6 +41,13 @@ export default defineConfig({
         'index.tsx',
         'chatEmojis.tsx',
         'app/features/dashboard/DashboardTrendChart.tsx',
+        // 路由页面、路由装配、应用外壳与通用 UI 同属纯展示层，业务行为由各 feature 的 Hook/状态/Action 模块验证。
+        'app/features/*/pages/**',
+        'app/router/AppRouter.tsx',
+        'app/shell/**',
+        'shared/ui/**',
+        // 顶层错误边界只渲染静态恢复界面，不含业务规则。
+        'app/errors/**',
       ],
     },
   },
@@ -95,6 +102,10 @@ export default defineConfig({
             modulePath.includes('/app/features/rules/components/AutomationIssuePanel.')
           ) {
             return 'rules-safety-controls';
+          }
+          // 关键词回复编辑器只在打开回复规则弹窗时使用，独立分片避免多表达式表单挤占规则主页面预算。
+          if (modulePath.includes('/app/features/rules/components/ReplyRuleEditor.')) {
+            return 'rules-reply-editor';
           }
           // 关键词回复的商品多选与轻提示仅在回复规则交互中使用，独立分片避免挤占规则主页面预算。
           if (

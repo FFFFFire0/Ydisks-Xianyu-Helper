@@ -158,7 +158,7 @@ func normalizedStatusCandidates(status string) []string {
 	case "processing":
 		return []string{"processing", "1"}
 	case "pending_ship":
-		return []string{"pending_ship", "paid", "2"}
+		return append([]string(nil), pendingShipStatuses...)
 	case "shipped":
 		return []string{"shipped", "3"}
 	case "completed":
@@ -193,9 +193,13 @@ func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, 
 		return nil, nil
 	}
 	// where 保存跨数据库通用的订单筛选条件。
-	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "order_status IN (?,?,?,?,?,?)"}
-	// args 保存 where 条件对应的绑定参数，状态集合覆盖本地和参考项目的待发货别名。
-	args := []any{accountID, sessionID, "pending_ship", "paid", "2", "pending_delivery", "partial_success", "partial_pending_finalize"}
+	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "order_status IN (?,?,?,?)"}
+	// args 保存 where 条件对应的绑定参数，状态集合与兜底扫描共用 pendingShipStatuses。
+	args := []any{accountID, sessionID}
+	// status 是待发货存量取值之一，与兜底扫描共用同一定义。
+	for _, status := range pendingShipStatuses {
+		args = append(args, status)
+	}
 	// normalizedBuyerID 是去除协议后缀的买家标识，用于兼容裸值和带后缀值。
 	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
 		where = append(where, "buyer_id IN (?,?)")
@@ -220,25 +224,36 @@ func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, 
 	return o.Get(ctx, orderID)
 }
 
-// FindLatestByItem 按账号和商品查找最近一笔订单，不限制订单状态，可选买家约束。
-// 供未知角色简化事件在缺少会话标识时判断「同一商品的交易是否已经处理完毕」使用。
-func (o *Orders) FindLatestByItem(ctx context.Context, cookieID, itemID, buyerID string) (*Order, error) {
-	// accountID、productID 保存清理后的账号和商品标识；任一缺失时无从匹配。
+// FindRecentByChat 按账号和会话查找 since 之后更新过的最近一笔订单，不限订单状态。
+// 供只含会话标识的简化系统消息识别“同一会话里已被完整事件处理（如已发货）的订单”；
+// buyerID、itemID 为空时不作为条件，非空时必须一致，避免同会话跨商品串单。since 按 UTC 比较，与 updated_at 的存储口径一致。
+func (o *Orders) FindRecentByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string, since time.Time) (*Order, error) {
+	// accountID 是经过空白清理的账号标识，限制订单归属范围。
 	accountID := strings.TrimSpace(cookieID)
-	productID := strings.TrimSpace(itemID)
-	if accountID == "" || productID == "" {
+	// sessionID 是去除协议后缀的会话标识，兼容订单表历史存储格式。
+	sessionID := strings.TrimSpace(strings.TrimSuffix(chatID, "@goofish"))
+	if accountID == "" || sessionID == "" {
 		return nil, nil
 	}
-	// where、args 保存跨数据库通用的订单筛选条件。
-	where := []string{"cookie_id=?", "item_id=?", "deleted_at IS NULL"}
-	args := []any{accountID, productID}
+	// where 保存跨数据库通用的订单筛选条件；updated_at 使用 UTC 文本，与其他按时间截断的查询口径一致。
+	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "updated_at>=?"}
+	// args 保存 where 条件对应的绑定参数。
+	args := []any{accountID, sessionID, since.UTC().Format("2006-01-02 15:04:05")}
+	// normalizedBuyerID 是去除协议后缀的买家标识，用于兼容裸值和带后缀值。
 	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
 		where = append(where, "buyer_id IN (?,?)")
 		args = append(args, normalizedBuyerID, normalizedBuyerID+"@goofish")
 	}
-	// orderID 保存查询出的最近一笔订单业务标识。
+	// productID 是可选的商品约束，防止同一会话内跨商品串单。
+	if productID := strings.TrimSpace(itemID); productID != "" {
+		where = append(where, "item_id=?")
+		args = append(args, productID)
+	}
+	// orderID 保存查询出的最近订单业务标识。
 	var orderID string
+	// query 保存按更新时间和订单号倒序选择候选订单的 SQL。
 	query := `SELECT order_id FROM orders WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC, order_id DESC LIMIT 1`
+	// err 保存候选订单查询或扫描错误。
 	if err := o.DB.QueryRowContext(ctx, query, args...).Scan(&orderID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -387,10 +402,30 @@ func (o *Orders) SoftDeleteMissingForCookie(ctx context.Context, cookieID string
 
 // OrderStatusMap 将数字状态码转换为文本状态。
 var OrderStatusMap = map[string]string{
-	"paid": "pending_ship",
-	"1":    "processing", "2": "pending_ship", "3": "shipped", "4": "completed",
+	"paid": "pending_ship", "pending_delivery": "pending_ship",
+	"1": "processing", "2": "pending_ship", "3": "shipped", "4": "completed",
 	"5": "refunding", "6": "cancelled", "7": "refunding", "8": "cancelled",
 	"9": "refunding", "10": "cancelled", "11": "completed", "12": "cancelled",
+}
+
+// pendingShipStatuses 是库内可能出现的全部“待发货”存量取值：规范文本、历史 paid、平台数字码 2 与 pending_delivery 别名。
+// partial_success、partial_pending_finalize 表示部分发货，没有写入方且不得触发自动发货，故刻意不在此列。
+var pendingShipStatuses = []string{"pending_ship", "paid", "2", "pending_delivery"}
+
+// pendingShipStatusSQLList 返回待发货取值的 SQL 字面量列表（含括号），内容全部来自 pendingShipStatuses 常量，不含用户输入。
+func pendingShipStatusSQLList() string {
+	// quoted 保存逐项加单引号后的取值。
+	quoted := make([]string, 0, len(pendingShipStatuses))
+	// status 是待发货存量取值之一。
+	for _, status := range pendingShipStatuses {
+		quoted = append(quoted, "'"+status+"'")
+	}
+	return "(" + strings.Join(quoted, ",") + ")"
+}
+
+// IsPendingShipStatus 判断订单状态（含历史别名与数字码）是否表示付款后待发货。
+func IsPendingShipStatus(status string) bool {
+	return NormalizeOrderStatus(strings.TrimSpace(status)) == "pending_ship"
 }
 
 // NormalizeOrderStatus 数字码归一为文本。
@@ -440,13 +475,15 @@ type CardFull struct {
 	TextContent      string                `json:"text_content"`
 	DataContent      string                `json:"data_content"`
 	ImageURL         string                `json:"image_url"`
-	Description      string                `json:"description"`
-	Enabled          bool                  `json:"enabled"`
-	DelaySeconds     int                   `json:"delay_seconds"`
-	IsMultiSpec      bool                  `json:"is_multi_spec"`
-	SpecName         string                `json:"spec_name"`
-	SpecValue        string                `json:"spec_value"`
-	UserID           int64                 `json:"user_id"`
+	// LibraryImageID 是图片卡密引用的图片库图片主键；与 ImageURL 互斥，0 表示未使用图片库。
+	LibraryImageID int64  `json:"library_image_id"`
+	Description    string `json:"description"`
+	Enabled        bool   `json:"enabled"`
+	DelaySeconds   int    `json:"delay_seconds"`
+	IsMultiSpec    bool   `json:"is_multi_spec"`
+	SpecName       string `json:"spec_name"`
+	SpecValue      string `json:"spec_value"`
+	UserID         int64  `json:"user_id"`
 }
 
 // ExistsOwned 判断卡密组是否属于指定用户。
@@ -468,10 +505,10 @@ func (c *Cards) Get(ctx context.Context, cardID int64) (*CardFull, error) {
 	var apiCfg, textContent, dataContent, imageURL, specName, specValue, desc sql.NullString
 	// err 用于本次流程后续判断的err
 	err := c.DB.QueryRowContext(ctx,
-		`SELECT id, name, type, api_config, text_content, data_content, image_url, description,
+		`SELECT id, name, type, api_config, text_content, data_content, image_url, library_image_id, description,
 		        enabled, delay_seconds, is_multi_spec, spec_name, spec_value, user_id
 		 FROM cards WHERE id=?`, cardID).Scan(
-		&cf.ID, &cf.Name, &cf.Type, &apiCfg, &textContent, &dataContent, &imageURL, &desc,
+		&cf.ID, &cf.Name, &cf.Type, &apiCfg, &textContent, &dataContent, &imageURL, &cf.LibraryImageID, &desc,
 		&enabled, &cf.DelaySeconds, &isMultiSpec, &specName, &specValue, &cf.UserID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -497,7 +534,7 @@ func (c *Cards) Get(ctx context.Context, cardID int64) (*CardFull, error) {
 func (c *Cards) AllForUser(ctx context.Context, userID int64) ([]CardFull, error) {
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := c.DB.QueryContext(ctx,
-		`SELECT id, name, type, api_config, text_content, data_content, image_url, description,
+		`SELECT id, name, type, api_config, text_content, data_content, image_url, library_image_id, description,
 		        enabled, delay_seconds, is_multi_spec, spec_name, spec_value, user_id
 		 FROM cards WHERE user_id=? ORDER BY id DESC`, userID)
 	if err != nil {
@@ -514,7 +551,7 @@ func (c *Cards) AllForUser(ctx context.Context, userID int64) ([]CardFull, error
 		// apiCfg、textContent、dataContent、imageURL、specName、specValue、desc 用于本次流程后续判断的apiCfg、textContent、dataContent、imageURL、specName、specValue、desc
 		var apiCfg, textContent, dataContent, imageURL, specName, specValue, desc sql.NullString
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&cf.ID, &cf.Name, &cf.Type, &apiCfg, &textContent, &dataContent, &imageURL, &desc,
+		err := rows.Scan(&cf.ID, &cf.Name, &cf.Type, &apiCfg, &textContent, &dataContent, &imageURL, &cf.LibraryImageID, &desc,
 			&enabled, &cf.DelaySeconds, &isMultiSpec, &specName, &specValue, &cf.UserID); err != nil {
 			return nil, err
 		}
@@ -542,30 +579,57 @@ func (c *Cards) Create(ctx context.Context, cf *CardFull) (int64, error) {
 		return 0, err
 	}
 	return insertReturningID(ctx, c.DB, c.Dialect,
-		`INSERT INTO cards (name, type, api_config, text_content, data_content, image_url, description,
+		`INSERT INTO cards (name, type, api_config, text_content, data_content, image_url, library_image_id, description,
 		    enabled, delay_seconds, is_multi_spec, spec_name, spec_value, user_id)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		cf.Name, cf.Type, nullable(apiConfig), nullable(cf.TextContent), nullable(cf.DataContent),
-		nullable(cf.ImageURL), nullable(cf.Description), boolToInt(cf.Enabled), cf.DelaySeconds,
+		nullable(cf.ImageURL), cf.LibraryImageID, nullable(cf.Description), boolToInt(cf.Enabled), cf.DelaySeconds,
 		boolToInt(cf.IsMultiSpec), nullable(cf.SpecName), nullable(cf.SpecValue), cf.UserID)
 }
 
 // Update 更新卡券。
 func (c *Cards) Update(ctx context.Context, cf *CardFull) error {
+	// err 保存加密或写入错误；无条件更新不关心影响行数。
+	_, err := c.updateCard(ctx, cf, "")
+	return err
+}
+
+// UpdateIfDataUnchanged 仅当数据库中仍是 data 卡且库存正文等于 expectedData 时整体更新卡券。
+// expectedData 是编辑者打开弹窗时看到的库存快照；自动发货在此期间消费过库存时返回 false 且不写入，
+// 防止旧快照把已发出的卡密写回库存造成重复发货。
+func (c *Cards) UpdateIfDataUnchanged(ctx context.Context, cf *CardFull, expectedData string) (bool, error) {
+	// guard 保存附加在 WHERE 中的库存快照比较条件，NULL 与空库存视为相同。
+	guard := " AND type='data' AND COALESCE(data_content,'')=?"
+	return c.updateCard(ctx, cf, guard, expectedData)
+}
+
+// updateCard 加密 API 模板后写入卡券全部可编辑字段；guard 为空时无条件更新，否则附加到 WHERE 条件。
+// guardArgs 是 guard 中占位符对应的参数；返回值表示是否有行被更新。
+func (c *Cards) updateCard(ctx context.Context, cf *CardFull, guard string, guardArgs ...any) (bool, error) {
 	// apiConfig 保存更新写入数据库前按用户所有权加密后的 API 请求模板。
 	apiConfig, err := c.encryptAPIConfig(cf.Type, cf.UserID, cf.APIConfig)
 	if err != nil {
-		return err
+		return false, err
 	}
-	// err 用于本次流程后续判断的err
-	_, err = c.DB.ExecContext(ctx,
-		`UPDATE cards SET name=?, type=?, api_config=?, text_content=?, data_content=?, image_url=?,
+	// args 保存 SET 字段、主键和可选守卫条件的参数，顺序与 SQL 占位符一致。
+	args := []any{cf.Name, cf.Type, nullable(apiConfig), nullable(cf.TextContent), nullable(cf.DataContent),
+		nullable(cf.ImageURL), cf.LibraryImageID, nullable(cf.Description), boolToInt(cf.Enabled), cf.DelaySeconds,
+		boolToInt(cf.IsMultiSpec), nullable(cf.SpecName), nullable(cf.SpecValue), cf.ID}
+	args = append(args, guardArgs...)
+	// result 保存更新语句的执行结果，用于判断守卫条件是否命中。
+	result, err := c.DB.ExecContext(ctx,
+		`UPDATE cards SET name=?, type=?, api_config=?, text_content=?, data_content=?, image_url=?, library_image_id=?,
 		    description=?, enabled=?, delay_seconds=?, is_multi_spec=?, spec_name=?, spec_value=?, updated_at=CURRENT_TIMESTAMP
-		 WHERE id=?`,
-		cf.Name, cf.Type, nullable(apiConfig), nullable(cf.TextContent), nullable(cf.DataContent),
-		nullable(cf.ImageURL), nullable(cf.Description), boolToInt(cf.Enabled), cf.DelaySeconds,
-		boolToInt(cf.IsMultiSpec), nullable(cf.SpecName), nullable(cf.SpecValue), cf.ID)
-	return err
+		 WHERE id=?`+guard, args...)
+	if err != nil {
+		return false, err
+	}
+	// affected 保存匹配守卫条件的行数；MySQL 连接已启用 clientFoundRows，三种方言均按匹配行计数。
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 // UpdateDataMetadata 只更新 data 卡券的元数据，避免覆盖自动发货并发消费后的库存正文。

@@ -31,6 +31,7 @@ func TestOpenAPISuccessContractCoverage(t *testing.T) {
 		{name: "accounts-and-system", run: TestOpenAPIAccountAndSystemResponses},
 		{name: "query-chat-orders", run: TestOpenAPIQueryChatAndOrderResponses},
 		{name: "items-and-cards", run: TestOpenAPIItemAndCardResponses},
+		{name: "card-api-editor", run: TestCardAPIEditorContract},
 		{name: "notifications", run: TestOpenAPINotificationResponses},
 		{name: "versioned-session", run: TestVersionedSessionRoutesPreserveLegacyContracts},
 		{name: "versioned-account", run: TestVersionedAccountRoutesPreserveLegacyContracts},
@@ -55,6 +56,14 @@ func TestOpenAPISuccessContractCoverage(t *testing.T) {
 		{name: "analytics-admin-public-success", run: TestAnalyticsAdminAndPublicSuccessResponseContracts},
 		{name: "local-resource-mutations", run: TestOpenAPILocalResourceMutationResponses},
 		{name: "remaining-versioned-success", run: TestOpenAPIRemainingVersionedSuccessResponses},
+		{name: "runtime-logs", run: TestOpenAPIRuntimeLogResponses},
+		{name: "card-sale-records", run: TestCardSaleRecordsEndpoint},
+		{name: "card-export", run: TestCardExportEndpoint},
+		{name: "order-delivered-cards", run: TestOrderDeliveredCardsEndpoint},
+		{name: "card-sold-count", run: TestCardListIncludesSoldCount},
+		{name: "item-greetings", run: TestItemGreetingHandlersContract},
+		{name: "library", run: TestLibraryHandlersContract},
+		{name: "automation-audit-events", run: TestAutomationAuditEventsEndpoint},
 	}
 	// scenario 是当前执行的领域真实响应场景。
 	for _, scenario := range scenarios {

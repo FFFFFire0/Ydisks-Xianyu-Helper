@@ -370,7 +370,7 @@ func New(cfg Config) *Account {
 			},
 			pendingRenewal: pendingRenewalCoordinator{},
 		},
-		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger)),
+		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID, "subsys", "engine"), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger.With("account", cfg.CookieID, "subsys", "ws"))),
 	}
 	// echoTracker 保存当前账号自动化出站消息的回显等待项；其生命周期与账号 facade 一致。
 	echoTracker := newOutgoingEchoTracker()
@@ -382,14 +382,18 @@ func New(cfg Config) *Account {
 		}
 	}
 	a.messageDispatcher = newMessageDispatcher(messageDispatcherConfig{
-		CookieID:        cfg.CookieID,
-		CurrentCookie:   a.currentCookieStr,
-		CurrentHandler:  func() Handler { return a.handler },
-		ObserveOutgoing: echoTracker.observeMessage,
-		Reply:           a.reply,
-		Logger:          logger,
-		BeginTask:       a.lifecycle.beginTask,
-		RecordMessage:   a.recordMessageReceived,
+		CookieID:               cfg.CookieID,
+		CurrentCookie:          a.currentCookieStr,
+		CurrentHandler:         func() Handler { return a.handler },
+		ObserveOutgoing:        echoTracker.observeMessage,
+		ObserveOutgoingMatched: echoTracker.observeMessageMatched,
+		ManualOutgoing: func(ctx context.Context, message OutgoingChatMessage) {
+			a.recordManualTakeover(ctx, message)
+		},
+		Reply:         a.reply,
+		Logger:        logger,
+		BeginTask:     a.lifecycle.beginTask,
+		RecordMessage: a.recordMessageReceived,
 	})
 	// connection 保存绑定当前账号 facade 的连接编排组件；它只在构造完成后才可被 Run 调用。
 	a.connection = connectionCoordinator{account: a}
@@ -417,24 +421,18 @@ func (a *Account) startWSRecorder(ctx context.Context) {
 	a.recorder.start(ctx)
 }
 
-// handleWSConnectFailure 处理 WebSocket 握手的凭证类错误与可重试的传输类错误。
-// 只有平台明确拒绝凭证时才置 auth_expired 并终止账号主循环；
-// 拨号失败、DNS 解析失败、连接超时等瞬时错误只置可重试状态并返回 nil，
-// 让调用点的 continue 真正生效，避免一次网络抖动导致账号永久停摆。
+// handleWSConnectFailure 封装handleWSConnectFailure业务协调。
 func (a *Account) handleWSConnectFailure(ctx context.Context, err error) error {
 	a.clearConnectionToken(ctx)
-	// authRejected 标记平台是否明确拒绝了本次凭证，只有这类错误才需要用户重新登录。
-	authRejected := ws.IsConnectLimitError(err) || ws.IsInvalidTokenError(err) || ws.IsAuthenticationError(err)
-	if !authRejected {
-		// 传输层瞬时错误：保留重试机会，网络恢复后账号应能自行回到在线状态。
-		a.setRuntimeState(RuntimeReconnecting, "消息服务连接失败，正在重试")
-		a.logger.Warn("WS 握手失败，将按退避重试", "err", err)
-		return nil
-	}
-	// reason 是最终展示给用户的凭证失效原因。
+	// reason 用于本次流程后续判断的原因
 	reason := "消息凭证被拒绝，请重新登录"
+	// 仅处理服务端 /reg 鉴权拒绝；网络类失败由 handleWSOpenFailure 退避重试。
 	if ws.IsConnectLimitError(err) {
 		reason = "消息会话已被服务端移除"
+	} else if !ws.IsInvalidTokenError(err) && !ws.IsAuthenticationError(err) {
+		// 原生握手 CONNECT_FAILED 和 INVALID_TOKEN 一样进入官网 CONN_ERROR=5；
+		// /im 页面不会对该状态自动 reConnect，而是展示重新登录入口。
+		reason = "消息服务连接失败，请重新登录"
 	}
 	a.setRuntimeState(RuntimeAuthExpired, reason)
 	a.notifyOffline(ctx, reason)
@@ -568,6 +566,16 @@ func (a *Account) notifyOffline(ctx context.Context, reason string) {
 	}
 	a.alertEvent(ctx, EventAccountOffline, AlertLevelWarn, "账号已掉线，需要重新登录",
 		fmt.Sprintf("账号 %s 的闲鱼消息连接已进入不可自动重连状态。原因：%s。请更新登录信息或重新登录后再启动账号。", a.CookieID, reason))
+}
+
+// notifyDialRetrying 为拨号失败或消息 Token 获取失败发送一次可自动重试的离线通知；reason 保存本次失败原因。
+// 与 notifyOffline 不同，账号仍会自动重试，文案不要求用户重新登录；连接恢复后沿用既有恢复通知。
+func (a *Account) notifyDialRetrying(ctx context.Context, reason string) {
+	if !a.markOfflineNotified(reason) {
+		return
+	}
+	a.alertEvent(ctx, EventAccountOffline, AlertLevelWarn, "账号消息连接中断，正在自动重试",
+		fmt.Sprintf("账号 %s 暂时无法连接闲鱼消息服务。原因：%s。系统会持续退避重试，连接恢复后自动重新上线。", a.CookieID, reason))
 }
 
 // notifyRecoveringOffline 封装notifyRecoveringOffline业务协调。
